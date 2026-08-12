@@ -1,7 +1,21 @@
-export async function listDir(path) {
-  const query = !path || path === '/' ? '' : `?path=${encodeURIComponent(path)}`
+// 目录列表分页的页大小:虚拟滚动按需拉取,每页 stat/传输/解析只承担
+// 一页的成本,大目录(数十万条目)下首页秒开。
+export const LIST_CHUNK = 2000
+
+export async function listDir(path, { offset, limit } = {}) {
+  const q = []
+  if (path && path !== '/') q.push(`path=${encodeURIComponent(path)}`)
+  if (offset) q.push(`offset=${offset}`)
+  if (limit) q.push(`limit=${limit}`)
+  const query = q.length ? `?${q.join('&')}` : ''
+  const t0 = performance.now()
   const res = await fetch(`/api/list${query}`)
+  const t1 = performance.now()
   const data = await res.json().catch(() => null)
+  const t2 = performance.now()
+  console.log(
+    `[perf] listDir(${path || '/'}${offset ? `+${offset}` : ''}) fetch=${Math.round(t1 - t0)}ms parse=${Math.round(t2 - t1)}ms wire=${res.headers.get('content-length') ?? '?'}B`
+  )
   if (!res.ok) {
     throw new Error((data && data.error) || `HTTP ${res.status}`)
   }

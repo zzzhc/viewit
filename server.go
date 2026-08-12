@@ -44,6 +44,8 @@ type fileEntry struct {
 type listResponse struct {
 	Path    string      `json:"path"`
 	IsDir   bool        `json:"isDir"`
+	Total   int         `json:"total,omitempty"`  // 目录模式:排序后总条目数(分页时前端用它撑虚拟滚动高度)
+	Offset  int         `json:"offset,omitempty"` // 目录模式:本页在总条目中的起始下标
 	Entries []fileEntry `json:"entries,omitempty"`
 	File    *fileEntry  `json:"file,omitempty"`
 }
@@ -211,8 +213,28 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 	// 目录列表不嗅探文件 MIME:每个文件一次 open+read 在 HDD 大目录下是
 	// 灾难(上万次磁盘寻道)。列表只需要 size/modTime/isDir;MIME 在点开
 	// 文件预览时由上面的单文件分支内容嗅探,仍以内容为准。
-	entries := make([]fileEntry, 0, len(dirEntries))
-	for _, de := range dirEntries {
+	//
+	// 分页(limit/offset):排序只读 DirEntry(d_type 免 stat),stat 只对
+	// 页内条目做。大目录下首页从"stat 全部条目"降到"stat 一页",HDD
+	// 场景这是数量级差异;前端虚拟滚动按需拉页。
+	sort.Slice(dirEntries, func(i, j int) bool {
+		di, dj := dirEntries[i], dirEntries[j]
+		if di.IsDir() != dj.IsDir() {
+			return di.IsDir() // directories first
+		}
+		return di.Name() < dj.Name() // byte-wise ascending
+	})
+	total := len(dirEntries)
+	offset, limit := listRange(r)
+	if offset > total {
+		offset = total
+	}
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	entries := make([]fileEntry, 0, end-offset)
+	for _, de := range dirEntries[offset:end] {
 		info, err := de.Info()
 		if err != nil {
 			continue // unreadable entry: skip rather than fail the listing
@@ -224,13 +246,22 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 			IsDir:   info.IsDir(),
 		})
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].IsDir != entries[j].IsDir {
-			return entries[i].IsDir // directories first
-		}
-		return entries[i].Name < entries[j].Name // byte-wise ascending
+	writeJSON(w, http.StatusOK, listResponse{
+		Path: cp, IsDir: true, Total: total, Offset: offset, Entries: entries,
 	})
-	writeJSON(w, http.StatusOK, listResponse{Path: cp, IsDir: true, Entries: entries})
+}
+
+// listRange parses the optional offset/limit query parameters for directory
+// listing pagination. limit<=0 means "no limit" (full listing), preserving
+// the pre-pagination behavior for callers that do not opt in.
+func listRange(r *http.Request) (offset, limit int) {
+	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v > 0 {
+		offset = v
+	}
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	return offset, limit
 }
 
 func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {

@@ -116,6 +116,71 @@ func TestListDirsFirst(t *testing.T) {
 	}
 }
 
+// TestListPagination 覆盖目录列表的 limit/offset 分页:排序全局一致(目录
+// 优先 + 名称升序),每页只含切片内的条目,total 报告全量;不带参数时
+// 保持全量旧行为。
+func TestListPagination(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	// 2 个目录 + 5 个文件,排序后:dir_a, dir_z, f1..f5
+	for _, name := range []string{"dir_a", "dir_z"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"f3.txt", "f1.txt", "f5.txt", "f2.txt", "f4.txt"} {
+		writeFile(t, filepath.Join(root, name), "x")
+	}
+
+	// 第 0 页:2 条(只含目录)
+	rr := doGet(t, h, "/api/list?path=&limit=2")
+	assertStatus(t, rr, http.StatusOK)
+	resp := decodeList(t, rr)
+	if resp.Total != 7 || resp.Offset != 0 {
+		t.Fatalf("total/offset = %d/%d, want 7/0", resp.Total, resp.Offset)
+	}
+	if len(resp.Entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(resp.Entries))
+	}
+	if resp.Entries[0].Name != "dir_a" || resp.Entries[1].Name != "dir_z" {
+		t.Fatalf("page0 = %q, %q; want dir_a, dir_z", resp.Entries[0].Name, resp.Entries[1].Name)
+	}
+
+	// 第 1 页:offset=2, 3 条文件
+	rr = doGet(t, h, "/api/list?path=&offset=2&limit=3")
+	resp = decodeList(t, rr)
+	if resp.Offset != 2 {
+		t.Fatalf("offset = %d, want 2", resp.Offset)
+	}
+	if len(resp.Entries) != 3 {
+		t.Fatalf("entries = %d, want 3", len(resp.Entries))
+	}
+	if resp.Entries[0].Name != "f1.txt" || resp.Entries[2].Name != "f3.txt" {
+		t.Fatalf("page1 = %s..%s; want f1..f3", resp.Entries[0].Name, resp.Entries[2].Name)
+	}
+
+	// 最后一页:offset 超过 total 时不越界
+	rr = doGet(t, h, "/api/list?path=&offset=100&limit=10")
+	resp = decodeList(t, rr)
+	if resp.Offset != 7 || len(resp.Entries) != 0 {
+		t.Fatalf("overflow page: offset=%d entries=%d, want 7/0", resp.Offset, len(resp.Entries))
+	}
+
+	// 不带分页参数:全量 + total
+	rr = doGet(t, h, "/api/list?path=")
+	resp = decodeList(t, rr)
+	if resp.Total != 7 || len(resp.Entries) != 7 {
+		t.Fatalf("full list: total=%d entries=%d, want 7/7", resp.Total, len(resp.Entries))
+	}
+
+	// 文件分支忽略分页参数
+	rr = doGet(t, h, "/api/list?path=f1.txt&limit=0")
+	assertStatus(t, rr, http.StatusOK)
+	resp = decodeList(t, rr)
+	if resp.IsDir || resp.File == nil {
+		t.Fatalf("file branch: want file response, got %+v", resp)
+	}
+}
+
 func TestListFilePathReturnsFile(t *testing.T) {
 	h, root := newTestHandler(t, false)
 	writeFile(t, filepath.Join(root, "x.go"), "package main\n")

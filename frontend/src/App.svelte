@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import FileList from './FileList.svelte'
   import FileFinder from './FileFinder.svelte'
   import CodeViewer from './CodeViewer.svelte'
@@ -11,14 +11,16 @@
   import MarkdownViewer from './MarkdownViewer.svelte'
   import HtmlViewer from './HtmlViewer.svelte'
   import DownloadViewer from './DownloadViewer.svelte'
-  import { listDir } from './api.js'
+  import { listDir, LIST_CHUNK } from './api.js'
   import { downloadUrl } from './api.js'
   import { viewerFor } from './viewers.js'
   import { cycleTheme, themeLabel, themePref } from './theme.svelte.js'
 
   // path is relative to root: "/" or "sub" / "sub/inner.txt"
   let path = $state('/')
-  let entries = $state([])
+  // 目录模式:首屏只取一页(limit=LIST_CHUNK),FileList 虚拟滚动按需拉取
+  // 后续页;total 是排序后的全量条目数。
+  let dirMeta = $state(null) // { total, entries } | null
   let selected = $state(null) // file entry being previewed
   let loading = $state(true)
   let error = $state('')
@@ -49,19 +51,25 @@
   async function load() {
     loading = true
     error = ''
+    const t0 = performance.now()
     try {
-      const data = await listDir(path)
+      const data = await listDir(path, { limit: LIST_CHUNK })
+      const t1 = performance.now()
       if (data.isDir) {
-        // 空目录的响应没有 entries 字段(omitempty 省略空 slice)
-        entries = data.entries || []
+        dirMeta = { total: data.total || 0, entries: data.entries || [] }
         selected = null
       } else {
         selected = data.file
-        entries = []
+        dirMeta = null
       }
+      const t2 = performance.now()
+      await tick() // 等 Svelte flush,此时列表 DOM 已更新
+      console.log(
+        `[perf] load(${path || '/'}) listDir=${Math.round(t1 - t0)}ms 赋值=${Math.round(t2 - t1)}ms DOM更新=${Math.round(performance.now() - t2)}ms 目录条目=${dirMeta ? dirMeta.total : 'file'}`
+      )
     } catch (e) {
       error = e.message
-      entries = []
+      dirMeta = null
       selected = null
     } finally {
       loading = false
@@ -175,8 +183,11 @@
       {:else}
         <DownloadViewer path={filePath} name={selected.name} size={selected.size} />
       {/if}
-    {:else}
-      <FileList {entries} {path} onNavigate={onNavigate} />
+    {:else if dirMeta}
+      <!-- key 按目录重建 FileList:分页状态随目录生命周期,无需重置逻辑 -->
+      {#key path}
+        <FileList {path} initial={dirMeta} onNavigate={onNavigate} />
+      {/key}
     {/if}
   </main>
 
