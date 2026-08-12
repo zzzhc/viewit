@@ -11,3 +11,7 @@ export async function listDir(path) {
 export function fileUrl(path) {
   return `/api/file?path=${encodeURIComponent(path)}`
 }
+
+export function downloadUrl(path) {
+  return `/api/download?path=${encodeURIComponent(path)}`
+}

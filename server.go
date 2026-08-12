@@ -1,17 +1,22 @@
 package main
 
 import (
+	"archive/zip"
+	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -43,7 +48,7 @@ type listResponse struct {
 
 //	newHandler canonicalizes root (Abs + EvalSymlinks) and wires the routes:
 //
-//	GET /api/list, GET /api/file, GET /api/ws (fuzzy find)
+//	GET /api/list, GET /api/file, GET /api/download, GET /api/ws (fuzzy find)
 //	GET /{$} -> index, GET / -> SPA fallback
 //
 // The embedded frontend is served in dev mode too, so the server is fully
@@ -73,10 +78,16 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/list", s.handleList)
 	mux.HandleFunc("GET /api/file", s.handleFile)
+	mux.HandleFunc("GET /api/download", s.handleDownload)
 	mux.HandleFunc("GET /api/ws", s.handleWS)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /", s.handleSPA)
 	return mux, nil
+}
+
+// contains reports whether p is root itself or lives under it.
+func (s *server) contains(p string) bool {
+	return p == s.root || strings.HasPrefix(p, s.root+string(filepath.Separator))
 }
 
 // resolve maps the ?path= query parameter to an absolute path inside root.
@@ -107,7 +118,7 @@ func (s *server) resolve(r *http.Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if resolved != s.root && !strings.HasPrefix(resolved, s.root+string(filepath.Separator)) {
+	if !s.contains(resolved) {
 		return "", errOutsideRoot
 	}
 	return resolved, nil
@@ -204,6 +215,193 @@ func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, st.Name(), st.ModTime(), f)
 }
 
+// handleDownload streams a download: a directory becomes a zip archive
+// written entry-by-entry (the client receives data before packing finishes),
+// a single file is streamed with gzip at the highest compression level when
+// its content is compressible, verbatim otherwise.
+func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	resolved, err := s.resolve(r)
+	if err != nil {
+		mapResolveErr(w, err)
+		return
+	}
+	st, err := os.Stat(resolved)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	if st.IsDir() {
+		s.streamZip(w, resolved, st.Name())
+		return
+	}
+	s.streamFile(w, resolved, st)
+}
+
+// streamFile sends one file as an attachment. Compressible content goes out
+// gzip-encoded with gzip.BestCompression and no Content-Length (chunked);
+// already-compressed payloads are copied verbatim with a known size.
+func (s *server) streamFile(w http.ResponseWriter, resolved string, st fs.FileInfo) {
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": st.Name()}))
+	f, err := os.Open(resolved)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	defer f.Close()
+	if !compressible(sniffMimeFrom(f)) {
+		w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		io.Copy(w, f)
+		return
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	w.Header().Set("Content-Encoding", "gzip")
+	w.Header().Set("Vary", "Accept-Encoding")
+	zw, err := gzip.NewWriterLevel(w, gzip.BestCompression)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	rc := http.NewResponseController(w)
+	buf := make([]byte, 256*1024)
+	for {
+		n, rerr := f.Read(buf)
+		if n > 0 {
+			zw.Write(buf[:n])
+			if rerr == nil { // keep the download progressive on large files
+				zw.Flush()
+				rc.Flush()
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	zw.Close()
+	rc.Flush()
+}
+
+// streamZip archives a directory into a zip written straight to the response.
+// Entries are emitted as they are walked and flushed per entry, so the client
+// starts receiving bytes immediately instead of waiting for the archive to be
+// fully built. Compressible content is deflated, already-compressed payloads
+// stored verbatim. Symlinks are followed only when they resolve to a regular
+// file inside root; directory symlinks are skipped (cycle risk) and symlinks
+// escaping root are dropped. Failures mid-stream abort the response (the
+// status is already committed, so the client just sees a truncated archive).
+func (s *server) streamZip(w http.ResponseWriter, resolved, name string) {
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name + ".zip"}))
+
+	bufw := bufio.NewWriterSize(w, 64*1024)
+	zw := zip.NewWriter(bufw)
+	rc := http.NewResponseController(w)
+	flush := func() {
+		bufw.Flush()
+		rc.Flush()
+	}
+	// a top-level folder named after the downloaded directory keeps the
+	// archive self-contained (extracting yields one folder, also for the
+	// empty-dir case)
+	if _, err := zw.Create(name + "/"); err != nil {
+		return
+	}
+	flush()
+	abort := func(err error) {
+		zw.Close()
+		bufw.Flush()
+		rc.Flush()
+	}
+	err := filepath.WalkDir(resolved, func(p string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return nil // unreadable entry: skip rather than abort the archive
+		}
+		rel, err := filepath.Rel(resolved, p)
+		if err != nil || rel == "." {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		zpath := name + "/" + filepath.ToSlash(rel)
+		if d.IsDir() {
+			_, err := zw.Create(zpath + "/")
+			if err == nil {
+				flush()
+			}
+			return err
+		}
+		target := p
+		if info.Mode()&fs.ModeSymlink != 0 {
+			rp, err := filepath.EvalSymlinks(p)
+			if err != nil || !s.contains(rp) {
+				return nil // broken or escaping symlink: drop it
+			}
+			ti, err := os.Stat(rp)
+			if err != nil || ti.IsDir() {
+				return nil // directory symlink: skip (cycle risk)
+			}
+			target, info = rp, ti
+		}
+		f, err := os.Open(target)
+		if err != nil {
+			return nil
+		}
+		method := zip.Deflate
+		if !compressible(sniffMimeFrom(f)) {
+			method = zip.Store
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			f.Close()
+			return nil
+		}
+		hdr := &zip.FileHeader{Name: zpath, Method: method, Modified: info.ModTime()}
+		hdr.SetMode(info.Mode())
+		hd, err := zw.CreateHeader(hdr)
+		if err != nil {
+			f.Close()
+			return err
+		}
+		_, err = io.Copy(hd, f)
+		f.Close()
+		if err != nil {
+			return err
+		}
+		flush()
+		return nil
+	})
+	if err != nil {
+		abort(err)
+		return
+	}
+	zw.Close()
+	bufw.Flush()
+	rc.Flush()
+}
+
+// compressible reports whether content of mime type mt gains from lossless
+// compression (text, markup, structured data). Already-compressed payloads
+// (images, video, archives) are sent and stored as-is.
+func compressible(mt string) bool {
+	if strings.HasPrefix(mt, "text/") {
+		return true
+	}
+	switch mt {
+	case "application/json", "application/xml", "application/javascript",
+		"application/x-javascript", "application/wasm", "image/svg+xml":
+		return true
+	}
+	return false
+}
+
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(s.index))
 }
@@ -229,8 +427,15 @@ func sniffMime(path string) string {
 		return ""
 	}
 	defer f.Close()
+	return sniffMimeFrom(f)
+}
+
+// sniffMimeFrom sniffs the head of r (caller keeps ownership). The reader is
+// left positioned after the sniffed head, so a seekable source can rewind
+// with Seek(0, io.SeekStart) before streaming the full content.
+func sniffMimeFrom(r io.Reader) string {
 	head := make([]byte, 512)
-	n, err := io.ReadFull(f, head)
+	n, err := io.ReadFull(r, head)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return ""
 	}

@@ -120,6 +120,11 @@ body {
   filter: brightness(1.1);
 }
 
+.topbar-dl {
+  margin-left: auto;
+  flex: none;
+}
+
 /* ---- file list ---- */
 
 .file-list {
@@ -169,6 +174,27 @@ body {
 .file-list .date-col {
   color: var(--fg-muted);
   width: 1%;
+}
+
+.file-list .op-col {
+  width: 1%;
+  text-align: right;
+}
+
+.dl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+
+.dl-btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 /* ---- viewers ---- */

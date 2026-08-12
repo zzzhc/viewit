@@ -10,6 +10,7 @@
   import XmlViewer from './XmlViewer.svelte'
   import DownloadViewer from './DownloadViewer.svelte'
   import { listDir } from './api.js'
+  import { downloadUrl } from './api.js'
   import { viewerFor } from './viewers.js'
 
   // path is relative to root: "/" or "sub" / "sub/inner.txt"
@@ -108,6 +109,9 @@
         <span class="crumb-sep">/</span>
       {/each}
     </nav>
+    {#if selected}
+      <a class="btn topbar-dl" href={downloadUrl(path)} download={selected.name}>下载</a>
+    {/if}
   </header>
 
   <main class="content">
@@ -135,7 +139,7 @@
         <DownloadViewer path={filePath} name={selected.name} size={selected.size} />
       {/if}
     {:else}
-      <FileList {entries} onNavigate={onNavigate} />
+      <FileList {entries} {path} onNavigate={onNavigate} />
     {/if}
   </main>
 

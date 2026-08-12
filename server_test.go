@@ -1,11 +1,16 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -271,6 +276,224 @@ func TestListMimeFromContent(t *testing.T) {
 		}
 		if resp.File.Mime != tc.want {
 			t.Errorf("%s: mime = %q, want %q", name, resp.File.Mime, tc.want)
+		}
+	}
+}
+
+func TestDownloadFileGzip(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	content := strings.Repeat("hello viewit\n", 2000) // ~28KB, compressible
+	writeFile(t, filepath.Join(root, "log.txt"), content)
+
+	rr := doGet(t, h, "/api/download?path=log.txt")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", rr.Header().Get("Content-Encoding"))
+	}
+	if cd := rr.Header().Get("Content-Disposition"); !strings.Contains(cd, "log.txt") {
+		t.Fatalf("Content-Disposition = %q, want attachment with log.txt", cd)
+	}
+	if rr.Header().Get("Content-Length") != "" {
+		t.Fatalf("Content-Length = %q, want absent (chunked gzip stream)", rr.Header().Get("Content-Length"))
+	}
+	zr, err := gzip.NewReader(rr.Body)
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	got, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("decompress: %v", err)
+	}
+	if string(got) != content {
+		t.Fatalf("decompressed body mismatch: got %d bytes, want %d", len(got), len(content))
+	}
+}
+
+func TestDownloadFileCompressedRatio(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	content := strings.Repeat("aaaaaaaaaaaaaaaaaaaaaaaaaaaa\n", 10000) // highly repetitive
+	writeFile(t, filepath.Join(root, "rep.txt"), content)
+
+	rr := doGet(t, h, "/api/download?path=rep.txt")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Body.Len() >= len(content) {
+		t.Fatalf("gzip body = %d bytes, want < %d (BestCompression should shrink repetitive text)", rr.Body.Len(), len(content))
+	}
+}
+
+func TestDownloadFileBinaryIdentity(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	content := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRjunkbinarydata\x00\x01\x02")
+	if err := os.WriteFile(filepath.Join(root, "img.png"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := doGet(t, h, "/api/download?path=img.png")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("Content-Encoding = %q, want none for already-compressed content", rr.Header().Get("Content-Encoding"))
+	}
+	if rr.Header().Get("Content-Length") != strconv.Itoa(len(content)) {
+		t.Fatalf("Content-Length = %q, want %d", rr.Header().Get("Content-Length"), len(content))
+	}
+	if !bytes.Equal(rr.Body.Bytes(), content) {
+		t.Fatalf("binary body mismatch: got %d bytes, want %d", rr.Body.Len(), len(content))
+	}
+}
+
+func TestDownloadDirZip(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	for _, d := range []string{"sub", "sub/nested"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(root, "sub", "a.txt"), strings.Repeat("text data\n", 100))
+	writeFile(t, filepath.Join(root, "sub", "b.bin"), "\x00\x01\x02\x03")
+	writeFile(t, filepath.Join(root, "sub", "nested", "c.log"), "nested content\n")
+	writeFile(t, filepath.Join(root, "sub", "图片 文件.txt"), "中文文件名\n")
+
+	rr := doGet(t, h, "/api/download?path=sub")
+	assertStatus(t, rr, http.StatusOK)
+	if ct := rr.Header().Get("Content-Type"); ct != "application/zip" {
+		t.Fatalf("Content-Type = %q, want application/zip", ct)
+	}
+	if cd := rr.Header().Get("Content-Disposition"); !strings.Contains(cd, "sub.zip") {
+		t.Fatalf("Content-Disposition = %q, want attachment with sub.zip", cd)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(rr.Body.Bytes()), int64(rr.Body.Len()))
+	if err != nil {
+		t.Fatalf("zip reader: %v", err)
+	}
+	byName := map[string]*zip.File{}
+	for _, f := range zr.File {
+		byName[f.Name] = f
+	}
+	wantNames := []string{"sub/", "sub/a.txt", "sub/b.bin", "sub/nested/", "sub/nested/c.log", "sub/图片 文件.txt"}
+	if len(zr.File) != len(wantNames) {
+		t.Fatalf("zip entries = %d, want %d: %v", len(zr.File), len(wantNames), zr.File)
+	}
+	for _, name := range wantNames {
+		if _, ok := byName[name]; !ok {
+			t.Errorf("zip missing entry %q; have %v", name, byName)
+		}
+	}
+	// text entry: deflated; binary entry: stored verbatim
+	if byName["sub/a.txt"].Method != zip.Deflate {
+		t.Errorf("a.txt method = %v, want Deflate", byName["sub/a.txt"].Method)
+	}
+	if byName["sub/b.bin"].Method != zip.Store {
+		t.Errorf("b.bin method = %v, want Store", byName["sub/b.bin"].Method)
+	}
+	for name, want := range map[string]string{
+		"sub/a.txt":        strings.Repeat("text data\n", 100),
+		"sub/b.bin":        "\x00\x01\x02\x03",
+		"sub/nested/c.log": "nested content\n",
+		"sub/图片 文件.txt":    "中文文件名\n",
+	} {
+		rc, err := byName[name].Open()
+		if err != nil {
+			t.Fatalf("%s: open: %v", name, err)
+		}
+		got, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("%s: read: %v", name, err)
+		}
+		if string(got) != want {
+			t.Errorf("%s: content = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestDownloadEmptyDirZip(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	if err := os.Mkdir(filepath.Join(root, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := doGet(t, h, "/api/download?path=empty")
+	assertStatus(t, rr, http.StatusOK)
+	zr, err := zip.NewReader(bytes.NewReader(rr.Body.Bytes()), int64(rr.Body.Len()))
+	if err != nil {
+		t.Fatalf("zip reader: %v", err)
+	}
+	if len(zr.File) != 1 || zr.File[0].Name != "empty/" {
+		t.Fatalf("entries = %v, want just the empty/ folder entry", zr.File)
+	}
+}
+
+func TestDownloadZipSymlinks(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	writeFile(t, filepath.Join(root, "real.txt"), "hello")
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "dir", "inside.txt"), "inside")
+	if err := os.Symlink(filepath.Join(root, "real.txt"), filepath.Join(root, "ln.txt")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	writeFile(t, outside, "secret")
+	if err := os.Symlink(outside, filepath.Join(root, "evil.txt")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(root, "dir"), filepath.Join(root, "dirlink")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	rr := doGet(t, h, "/api/download?path=")
+	assertStatus(t, rr, http.StatusOK)
+	zr, err := zip.NewReader(bytes.NewReader(rr.Body.Bytes()), int64(rr.Body.Len()))
+	if err != nil {
+		t.Fatalf("zip reader: %v", err)
+	}
+	top := filepath.Base(root) + "/"
+	names := map[string]bool{}
+	for _, f := range zr.File {
+		names[f.Name] = true
+	}
+	// safe file symlink is followed into the archive...
+	if !names[top+"ln.txt"] {
+		t.Errorf("zip missing followed symlink ln.txt: %v", names)
+	}
+	// ...but escaping and directory symlinks are dropped
+	if names[top+"evil.txt"] {
+		t.Errorf("zip contains escaping symlink evil.txt")
+	}
+	if names[top+"dirlink/"] || names[top+"dirlink/inside.txt"] {
+		t.Errorf("zip contains directory symlink dirlink")
+	}
+}
+
+func TestDownloadRootUsesRootDirName(t *testing.T) {
+	root := t.TempDir()
+	h, err := newHandler(root, false)
+	if err != nil {
+		t.Fatalf("newHandler: %v", err)
+	}
+	writeFile(t, filepath.Join(root, "x.txt"), "x")
+
+	rr := doGet(t, h, "/api/download?path=")
+	assertStatus(t, rr, http.StatusOK)
+	cd := rr.Header().Get("Content-Disposition")
+	if !strings.Contains(cd, ".zip") {
+		t.Fatalf("Content-Disposition = %q, want zip attachment", cd)
+	}
+}
+
+func TestDownloadMissing404(t *testing.T) {
+	h, _ := newTestHandler(t, false)
+	rr := doGet(t, h, "/api/download?path=missing")
+	assertStatus(t, rr, http.StatusNotFound)
+}
+
+func TestDownloadTraversalRejected(t *testing.T) {
+	h, _ := newTestHandler(t, false)
+	for _, p := range []string{"..", "../..", "/etc/passwd", "sub/../../etc/passwd"} {
+		rr := doGet(t, h, "/api/download?path="+p)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("path=%q: status = %d, want 400", p, rr.Code)
 		}
 	}
 }

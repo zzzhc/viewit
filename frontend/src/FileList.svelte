@@ -1,7 +1,12 @@
 <script>
   import { formatSize, formatDate } from './format.js'
+  import { downloadUrl } from './api.js'
 
-  let { entries, onNavigate } = $props()
+  let { entries, path, onNavigate } = $props()
+
+  function entryPath(name) {
+    return path === '/' ? name : path + '/' + name
+  }
 </script>
 
 {#if entries.length === 0}
@@ -13,6 +18,7 @@
         <th>名称</th>
         <th class="size-col">大小</th>
         <th class="date-col">修改时间</th>
+        <th class="op-col">操作</th>
       </tr>
     </thead>
     <tbody>
@@ -30,6 +36,12 @@
           </td>
           <td class="size-col">{entry.isDir ? '-' : formatSize(entry.size)}</td>
           <td class="date-col">{formatDate(entry.modTime)}</td>
+          <td class="op-col">
+            <a class="dl-btn" title="下载" href={downloadUrl(entryPath(entry.name))}
+               onclick={(e) => e.stopPropagation()}>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+            </a>
+          </td>
         </tr>
       {/each}
     </tbody>
