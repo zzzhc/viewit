@@ -260,6 +260,14 @@ body {
   padding: 0 !important;
 }
 
+/* svelte-jsoneditor tree view container */
+.json-tree {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  height: 100%;
+}
+
 /* viewerjs renders an inline canvas inside this container */
 .image-viewer {
   background: #111;

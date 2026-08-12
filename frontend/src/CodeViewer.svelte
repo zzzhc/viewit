@@ -3,6 +3,13 @@
   import { fileUrl } from './api.js'
   import { codeLanguage, detectLanguage, languageFromMime, languageLabel } from './viewers.js'
 
+  // svelte-jsoneditor is heavy (~600KB): load it only when a JSON file is viewed
+  let JsonEditor = $state(null)
+  async function loadJsonEditor() {
+    if (JsonEditor) return
+    JsonEditor = (await import('svelte-jsoneditor')).JSONEditor
+  }
+
   const MAX_SIZE = 5 * 1024 * 1024
 
   let { path, name, mime } = $props()
@@ -14,6 +21,9 @@
   let error = $state('')
   let copied = $state(false)
   let langLabel = $state('')
+  let isJson = $state(false)
+  let mode = $state('code') // 'code' | 'tree'
+  let treeContent = $derived({ text })
 
   $effect(() => {
     load()
@@ -27,6 +37,8 @@
     error = ''
     copied = false
     langLabel = ''
+    isJson = false
+    mode = 'code'
     try {
       const res = await fetch(fileUrl(path))
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -48,11 +60,13 @@
         // known name: trust the mapping
         html = hljs.highlight(text, { language: lang, ignoreIllegals: true }).value
         langLabel = languageLabel(lang)
+        isJson = lang === 'json'
       } else if (languageFromMime(mime)) {
         // content sniffing pinned the language (e.g. application/json)
         const fromMime = languageFromMime(mime)
         html = hljs.highlight(text, { language: fromMime, ignoreIllegals: true }).value
         langLabel = languageLabel(fromMime)
+        isJson = fromMime === 'json'
       } else {
         // no name or mime hint: let the content decide the language, but
         // only among a curated set and only with enough sample to go on
@@ -62,6 +76,15 @@
       }
     } catch (e) {
       error = e.message
+    }
+  }
+
+  async function toggleMode() {
+    if (mode === 'code') {
+      mode = 'tree'
+      await loadJsonEditor()
+    } else {
+      mode = 'code'
     }
   }
 
@@ -83,6 +106,11 @@
       {#if langLabel}<span class="filetype">{langLabel}</span>{/if}
     </span>
     {#if !tooBig && !error}
+      {#if isJson}
+        <button class="btn" onclick={toggleMode}>
+          {mode === 'code' ? '树形视图' : '代码视图'}
+        </button>
+      {/if}
       <button class="btn" onclick={copy}>{copied ? '已复制' : '复制'}</button>
     {/if}
   </div>
@@ -95,11 +123,21 @@
       <a class="btn" href={fileUrl(path)} download>下载</a>
     </div>
   {:else}
-    <div class="code-wrap">
-      <div class="gutter">
-        {#each lineNums as n}<span>{n}</span>{/each}
+    {#if isJson && mode === 'tree'}
+      <div class="json-tree">
+        {#if JsonEditor}
+          <JsonEditor content={treeContent} readOnly={true} mode="tree" mainMenuBar={false} statusBar={false} />
+        {:else}
+          <div class="hint">加载中…</div>
+        {/if}
       </div>
-      <pre><code>{@html html}</code></pre>
-    </div>
+    {:else}
+      <div class="code-wrap">
+        <div class="gutter">
+          {#each lineNums as n}<span>{n}</span>{/each}
+        </div>
+        <pre><code>{@html html}</code></pre>
+      </div>
+    {/if}
   {/if}
 </div>
