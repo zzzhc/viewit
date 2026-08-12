@@ -159,6 +159,80 @@ func TestFileServeContentType(t *testing.T) {
 	}
 }
 
+func TestRawFileServesAtMirroredPath(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	content := "<html><body>hi</body></html>"
+	if err := os.MkdirAll(filepath.Join(root, "site", "pages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "site", "pages", "index.html"), content)
+
+	rr := doGet(t, h, "/api/raw/site/pages/index.html")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Body.String() != content {
+		t.Fatalf("body = %q, want %q", rr.Body.String(), content)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", ct)
+	}
+
+	// module scripts refuse to run without a JavaScript MIME type
+	writeFile(t, filepath.Join(root, "site", "pages", "app.js"), "export const x = 1\n")
+	rr = doGet(t, h, "/api/raw/site/pages/app.js")
+	assertStatus(t, rr, http.StatusOK)
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+		t.Fatalf("js Content-Type = %q, want text/javascript", ct)
+	}
+}
+
+func TestRawFileRefusals(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := doGet(t, h, "/api/raw/")
+	assertStatus(t, rr, http.StatusBadRequest)
+	rr = doGet(t, h, "/api/raw/dir")
+	assertStatus(t, rr, http.StatusBadRequest)
+	rr = doGet(t, h, "/api/raw/missing.txt")
+	assertStatus(t, rr, http.StatusNotFound)
+}
+
+func TestNullOriginCORS(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	writeFile(t, filepath.Join(root, "page.html"), "<html></html>")
+
+	// sandboxed preview iframe sends Origin: null; its module scripts and
+	// fetches need the ACAO header to be readable
+	req := httptest.NewRequest("GET", "/api/raw/page.html", nil)
+	req.Header.Set("Origin", "null")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("ACAO = %q, want * for Origin: null", rr.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// same-origin requests must not carry the header
+	rr = doGet(t, h, "/api/raw/page.html")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("ACAO = %q, want unset for same-origin request", rr.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// preflight for a null-origin POST is answered without reaching the handler
+	pre := httptest.NewRequest("OPTIONS", "/api/list", nil)
+	pre.Header.Set("Origin", "null")
+	pre.Header.Set("Access-Control-Request-Method", "POST")
+	preRr := httptest.NewRecorder()
+	h.ServeHTTP(preRr, pre)
+	assertStatus(t, preRr, http.StatusNoContent)
+	if preRr.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("preflight ACAO = %q, want *", preRr.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
 func TestFileRange(t *testing.T) {
 	h, root := newTestHandler(t, false)
 	content := "0123456789"

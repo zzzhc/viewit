@@ -240,6 +240,7 @@ export function viewerFor(name, mime) {
   if (mt === 'application/json' || mt === 'application/xml') return 'code'
   if (mt.startsWith('text/')) {
     if (ext === 'svg') return 'image'
+    if (ext === 'html' || ext === 'htm' || mt === 'text/html') return 'html'
     if (ext === 'xml' || ext === 'xsd' || ext === 'xsl' || ext === 'xslt') return 'xml'
     if (ext === 'md' || ext === 'markdown' || mt === 'text/markdown') return 'markdown'
     return 'code'
@@ -252,6 +253,7 @@ export function viewerFor(name, mime) {
   if (VIDEO.includes(ext)) return 'video'
   if (AUDIO.includes(ext)) return 'audio'
   if (PDF.includes(ext)) return 'pdf'
+  if (ext === 'html' || ext === 'htm') return 'html'
   if (ext === 'xml' || ext === 'xsd' || ext === 'xsl' || ext === 'xslt') return 'xml'
   if (ext === 'md' || ext === 'markdown') return 'markdown'
   if (codeLanguage(lower) !== null || TEXT.includes(ext) || TEXT.includes(lower)) return 'code'

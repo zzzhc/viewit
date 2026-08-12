@@ -9,6 +9,7 @@
   import PdfViewer from './PdfViewer.svelte'
   import XmlViewer from './XmlViewer.svelte'
   import MarkdownViewer from './MarkdownViewer.svelte'
+  import HtmlViewer from './HtmlViewer.svelte'
   import DownloadViewer from './DownloadViewer.svelte'
   import { listDir } from './api.js'
   import { downloadUrl } from './api.js'
@@ -141,6 +142,8 @@
         <CodeViewer path={filePath} name={selected.name} mime={selected.mime} />
       {:else if view === 'markdown'}
         <MarkdownViewer path={filePath} name={selected.name} />
+      {:else if view === 'html'}
+        <HtmlViewer path={filePath} name={selected.name} />
       {:else}
         <DownloadViewer path={filePath} name={selected.name} size={selected.size} />
       {/if}

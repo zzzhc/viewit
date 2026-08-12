@@ -50,7 +50,8 @@ type listResponse struct {
 
 //	newHandler canonicalizes root (Abs + EvalSymlinks) and wires the routes:
 //
-//	GET /api/list, GET /api/file, GET /api/download, GET /api/ws (fuzzy find)
+//	GET /api/list, GET /api/file, GET /api/raw/{path...}, GET /api/download,
+//	GET /api/ws (fuzzy find)
 //	GET /{$} -> index, GET / -> SPA fallback
 //
 // The embedded frontend is served in dev mode too, so the server is fully
@@ -78,13 +79,47 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	s.index = index
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/list", s.handleList)
-	mux.HandleFunc("GET /api/file", s.handleFile)
-	mux.HandleFunc("GET /api/download", s.handleDownload)
-	mux.HandleFunc("GET /api/ws", s.handleWS)
+	mux.Handle("GET /api/list", allowNullOrigin(http.HandlerFunc(s.handleList)))
+	mux.Handle("GET /api/file", allowNullOrigin(http.HandlerFunc(s.handleFile)))
+	mux.Handle("GET /api/raw/{path...}", allowNullOrigin(http.HandlerFunc(s.handleRaw)))
+	mux.Handle("GET /api/download", allowNullOrigin(http.HandlerFunc(s.handleDownload)))
+	mux.Handle("GET /api/ws", allowNullOrigin(http.HandlerFunc(s.handleWS)))
+	// preflight for null-origin CORS requests: the GET routes above do not
+	// match OPTIONS, so answer them here without reaching a handler
+	mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") == "null" {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "*")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	})
 	mux.Handle("GET /{$}", withFrontendEncoding(http.HandlerFunc(s.handleIndex)))
 	mux.Handle("GET /", withFrontendEncoding(http.HandlerFunc(s.handleSPA)))
 	return mux, nil
+}
+
+// allowNullOrigin adds permissive CORS headers only when the request's
+// Origin is the literal "null" — the signature of a sandboxed iframe or a
+// file:// page. The HTML preview runs in an opaque-origin sandboxed iframe,
+// where module scripts and fetches are always CORS-mode and would otherwise
+// be blocked. Same-origin requests (no Origin header or a real origin) pass
+// through untouched, so the app's own browsing stays exactly as before.
+func allowNullOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") == "null" {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "*")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // contains reports whether p is root itself or lives under it.
@@ -93,14 +128,20 @@ func (s *server) contains(p string) bool {
 }
 
 // resolve maps the ?path= query parameter to an absolute path inside root.
+func (s *server) resolve(r *http.Request) (string, error) {
+	return s.resolvePath(r.URL.Query().Get("path"))
+}
+
+// resolvePath maps a root-relative path ("" or "/" meaning root) to an
+// absolute path inside root. Shared by the ?path= query API and the raw
+// /api/raw/{path...} route.
 //
 // Defense in depth:
 //  1. String level: ".." elements and absolute paths (other than "/") are
 //     refused outright — they are never legitimate root-relative paths.
 //  2. EvalSymlinks follows symlinks, so the final target is checked.
 //  3. The resolved target must equal root or live under root+"/".
-func (s *server) resolve(r *http.Request) (string, error) {
-	p := r.URL.Query().Get("path")
+func (s *server) resolvePath(p string) (string, error) {
 	if p == "" {
 		p = "/"
 	}
@@ -214,6 +255,45 @@ func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 	}
 	// ServeContent handles Content-Type, Range/206 (video seeking) and
 	// If-Modified-Since.
+	http.ServeContent(w, r, st.Name(), st.ModTime(), f)
+}
+
+// handleRaw streams a file at its URL-mirrored path, so a document's
+// relative resources resolve against its own directory:
+// /api/raw/dir/page.html renders ./img.png as /api/raw/dir/img.png.
+// The path is rooted at the served root with the same containment rules as
+// /api/file; directories are refused.
+func (s *server) handleRaw(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	resolved, err := s.resolvePath(strings.TrimPrefix(r.URL.Path, "/api/raw/"))
+	if err != nil {
+		mapResolveErr(w, err)
+		return
+	}
+	f, err := os.Open(resolved)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if st.IsDir() {
+		writeErr(w, http.StatusBadRequest, "is a directory")
+		return
+	}
+	// The extension pins the MIME type when known: content sniffing cannot
+	// tell a .js from a .txt, and module scripts refuse to run unless the
+	// response is a JavaScript MIME type. Unknown extensions fall through
+	// to ServeContent's own sniffing.
+	if mt := mime.TypeByExtension(strings.ToLower(filepath.Ext(st.Name()))); mt != "" {
+		w.Header().Set("Content-Type", mt)
+	}
+	// ServeContent handles Content-Type (when unset), Range/206 (video
+	// seeking) and If-Modified-Since.
 	http.ServeContent(w, r, st.Name(), st.ModTime(), f)
 }
 
