@@ -1,7 +1,7 @@
 <script>
   import hljs from 'highlight.js'
   import { fileUrl } from './api.js'
-  import { codeLanguage, detectLanguage, languageFromMime, languageLabel } from './viewers.js'
+  import { codeLanguage, copyText, detectLanguage, languageFromMime, languageLabel } from './viewers.js'
 
   // svelte-jsoneditor is heavy (~600KB): load it only when a JSON file is viewed
   let JsonEditor = $state(null)
@@ -89,12 +89,9 @@
   }
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(text)
+    if (await copyText(text)) {
       copied = true
       setTimeout(() => (copied = false), 1500)
-    } catch {
-      // clipboard unavailable: fail silently
     }
   }
 </script>

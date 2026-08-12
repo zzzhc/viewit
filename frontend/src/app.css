@@ -200,7 +200,9 @@ body {
 /* ---- viewers ---- */
 
 .viewer {
-  height: calc(100vh - 48px);
+  /* fills main.content regardless of the topbar's real height, so the page
+     itself never grows a scrollbar */
+  height: 100%;
 }
 
 .viewer-toolbar {
@@ -319,7 +321,7 @@ body {
 }
 
 .pdf-viewer {
-  height: calc(100vh - 48px);
+  height: 100%;
 }
 
 .pdf-viewer iframe {

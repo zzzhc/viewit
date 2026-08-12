@@ -8,6 +8,7 @@
   import AudioViewer from './AudioViewer.svelte'
   import PdfViewer from './PdfViewer.svelte'
   import XmlViewer from './XmlViewer.svelte'
+  import MarkdownViewer from './MarkdownViewer.svelte'
   import DownloadViewer from './DownloadViewer.svelte'
   import { listDir } from './api.js'
   import { downloadUrl } from './api.js'
@@ -71,6 +72,9 @@
   }
 
   function onHashChange() {
+    // hashes that are not routes ("#section" in-page anchors) belong to the
+    // browser's default scroll behavior, not to the file router
+    if (!location.hash.startsWith('#/')) return
     path = pathFromHash()
   }
 
@@ -135,6 +139,8 @@
         <XmlViewer path={filePath} name={selected.name} />
       {:else if view === 'code'}
         <CodeViewer path={filePath} name={selected.name} mime={selected.mime} />
+      {:else if view === 'markdown'}
+        <MarkdownViewer path={filePath} name={selected.name} />
       {:else}
         <DownloadViewer path={filePath} name={selected.name} size={selected.size} />
       {/if}

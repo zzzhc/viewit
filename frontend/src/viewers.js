@@ -199,6 +199,34 @@ export function detectLanguage(text) {
   return AUTO_LANGS.includes(detected.language) ? detected.language : 'plaintext'
 }
 
+// Copy text to the clipboard. The async Clipboard API only exists in secure
+// contexts (https or localhost); on plain http LAN addresses fall back to the
+// legacy textarea + execCommand('copy') path. Returns true on success.
+export async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // fall through to the legacy path
+    }
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  ta.remove()
+  return ok
+}
+
 export function viewerFor(name, mime) {
   const lower = name.toLowerCase()
   const ext = extension(lower)
@@ -213,6 +241,7 @@ export function viewerFor(name, mime) {
   if (mt.startsWith('text/')) {
     if (ext === 'svg') return 'image'
     if (ext === 'xml' || ext === 'xsd' || ext === 'xsl' || ext === 'xslt') return 'xml'
+    if (ext === 'md' || ext === 'markdown' || mt === 'text/markdown') return 'markdown'
     return 'code'
   }
   // any other identified mime is binary non-media: the filename must not
@@ -224,6 +253,7 @@ export function viewerFor(name, mime) {
   if (AUDIO.includes(ext)) return 'audio'
   if (PDF.includes(ext)) return 'pdf'
   if (ext === 'xml' || ext === 'xsd' || ext === 'xsl' || ext === 'xslt') return 'xml'
+  if (ext === 'md' || ext === 'markdown') return 'markdown'
   if (codeLanguage(lower) !== null || TEXT.includes(ext) || TEXT.includes(lower)) return 'code'
   return 'download'
 }
