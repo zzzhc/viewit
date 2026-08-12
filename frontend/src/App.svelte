@@ -52,7 +52,8 @@
     try {
       const data = await listDir(path)
       if (data.isDir) {
-        entries = data.entries
+        // 空目录的响应没有 entries 字段(omitempty 省略空 slice)
+        entries = data.entries || []
         selected = null
       } else {
         selected = data.file
