@@ -23,6 +23,7 @@ type server struct {
 	root  string // canonicalized, symlink-free root directory
 	dist  fs.FS  // embedded frontend/dist
 	index []byte
+	idx   *findIndex // fuzzy-find index, built lazily on first WS connection
 }
 
 type fileEntry struct {
@@ -40,9 +41,9 @@ type listResponse struct {
 	File    *fileEntry  `json:"file,omitempty"`
 }
 
-// newHandler canonicalizes root (Abs + EvalSymlinks) and wires the routes:
+//	newHandler canonicalizes root (Abs + EvalSymlinks) and wires the routes:
 //
-//	GET /api/list, GET /api/file
+//	GET /api/list, GET /api/file, GET /api/ws (fuzzy find)
 //	GET /{$} -> index, GET / -> SPA fallback
 //
 // The embedded frontend is served in dev mode too, so the server is fully
@@ -56,7 +57,7 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("root %q: %w", root, err)
 	}
-	s := &server{root: resolved}
+	s := &server{root: resolved, idx: &findIndex{}}
 
 	dist, err := fs.Sub(embedFS, "frontend/dist")
 	if err != nil {
@@ -72,6 +73,7 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/list", s.handleList)
 	mux.HandleFunc("GET /api/file", s.handleFile)
+	mux.HandleFunc("GET /api/ws", s.handleWS)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /", s.handleSPA)
 	return mux, nil

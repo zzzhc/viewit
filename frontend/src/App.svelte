@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import FileList from './FileList.svelte'
+  import FileFinder from './FileFinder.svelte'
   import CodeViewer from './CodeViewer.svelte'
   import ImageViewer from './ImageViewer.svelte'
   import VideoViewer from './VideoViewer.svelte'
@@ -72,6 +73,13 @@
     path = pathFromHash()
   }
 
+  // 文件查找范围:目录页传当前目录,文件预览页取其父目录
+  function finderBase() {
+    if (!selected) return path
+    const i = path.lastIndexOf('/')
+    return i > 0 ? path.slice(0, i) : ''
+  }
+
   onMount(() => {
     path = pathFromHash()
     window.addEventListener('hashchange', onHashChange)
@@ -130,4 +138,6 @@
       <FileList {entries} onNavigate={onNavigate} />
     {/if}
   </main>
+
+  <FileFinder onOpen={(p) => navigate(p)} base={finderBase()} />
 </div>

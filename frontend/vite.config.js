@@ -5,7 +5,10 @@ export default defineConfig({
   plugins: [svelte()],
   server: {
     proxy: {
-      '/api': process.env.VITE_BACKEND || 'http://localhost:8080'
+      '/api': {
+        target: process.env.VITE_BACKEND || 'http://localhost:8080',
+        ws: true
+      }
     }
   }
 })

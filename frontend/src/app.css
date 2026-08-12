@@ -365,3 +365,100 @@ body {
 .cm-host { flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg); }
 .cm-host .cm-editor { height: 100%; }
 .cm-host .cm-scroller { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* ---- file finder ---- */
+
+.finder-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+
+.finder-panel {
+  width: min(680px, 92vw);
+  max-height: 65vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.finder-input {
+  margin: 10px;
+  padding: 8px 12px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+}
+
+.finder-input:focus {
+  border-color: var(--accent);
+}
+
+.finder-meta {
+  padding: 0 14px 6px;
+}
+
+.finder-hint {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.finder-results {
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  padding: 4px 0 8px;
+  min-height: 60px;
+}
+
+.finder-results .finder-hint {
+  padding: 10px 14px;
+}
+
+.finder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.finder-row.active {
+  background: rgba(79, 140, 255, 0.28);
+}
+
+.finder-row .icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.finder-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fz-dir {
+  color: var(--fg-muted);
+}
+
+.fz-name {
+  color: var(--fg);
+}
+
+.finder-path mark {
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+}
