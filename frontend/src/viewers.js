@@ -208,8 +208,13 @@ export function viewerFor(name, mime) {
   if (mt.startsWith('video/')) return 'video'
   if (mt.startsWith('audio/')) return 'audio'
   if (mt === 'application/pdf') return 'pdf'
+  if (mt === 'application/xml' || mt === 'text/xml') return 'xml'
   if (mt === 'application/json' || mt === 'application/xml') return 'code'
-  if (mt.startsWith('text/')) return ext === 'svg' ? 'image' : 'code'
+  if (mt.startsWith('text/')) {
+    if (ext === 'svg') return 'image'
+    if (ext === 'xml' || ext === 'xsd' || ext === 'xsl' || ext === 'xslt') return 'xml'
+    return 'code'
+  }
   // any other identified mime is binary non-media: the filename must not
   // override what the content says (a .json holding a zip is a zip)
   if (mt && mt !== 'application/octet-stream' && mt !== 'application/ogg') return 'download'
@@ -218,6 +223,7 @@ export function viewerFor(name, mime) {
   if (VIDEO.includes(ext)) return 'video'
   if (AUDIO.includes(ext)) return 'audio'
   if (PDF.includes(ext)) return 'pdf'
+  if (ext === 'xml' || ext === 'xsd' || ext === 'xsl' || ext === 'xslt') return 'xml'
   if (codeLanguage(lower) !== null || TEXT.includes(ext) || TEXT.includes(lower)) return 'code'
   return 'download'
 }

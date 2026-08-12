@@ -6,6 +6,7 @@
   import VideoViewer from './VideoViewer.svelte'
   import AudioViewer from './AudioViewer.svelte'
   import PdfViewer from './PdfViewer.svelte'
+  import XmlViewer from './XmlViewer.svelte'
   import DownloadViewer from './DownloadViewer.svelte'
   import { listDir } from './api.js'
   import { viewerFor } from './viewers.js'
@@ -118,6 +119,8 @@
         <AudioViewer path={filePath} />
       {:else if view === 'pdf'}
         <PdfViewer path={filePath} />
+      {:else if view === 'xml'}
+        <XmlViewer path={filePath} name={selected.name} />
       {:else if view === 'code'}
         <CodeViewer path={filePath} name={selected.name} mime={selected.mime} />
       {:else}
