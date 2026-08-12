@@ -79,9 +79,12 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	s.index = index
 
 	mux := http.NewServeMux()
-	mux.Handle("GET /api/list", allowNullOrigin(http.HandlerFunc(s.handleList)))
-	mux.Handle("GET /api/file", allowNullOrigin(http.HandlerFunc(s.handleFile)))
-	mux.Handle("GET /api/raw/{path...}", allowNullOrigin(http.HandlerFunc(s.handleRaw)))
+	// 列表/文件内容按 Accept-Encoding 协商压缩(list 的大 JSON、file/raw
+	// 的文本内容都受益);download 自带编码协商;ws 是 WebSocket 升级,
+	// 压缩由 WS 协议层负责,不能经 HTTP 编码中间件(它需要 Hijacker)。
+	mux.Handle("GET /api/list", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleList))))
+	mux.Handle("GET /api/file", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleFile))))
+	mux.Handle("GET /api/raw/{path...}", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleRaw))))
 	mux.Handle("GET /api/download", allowNullOrigin(http.HandlerFunc(s.handleDownload)))
 	mux.Handle("GET /api/ws", allowNullOrigin(http.HandlerFunc(s.handleWS)))
 	// preflight for null-origin CORS requests: the GET routes above do not
@@ -490,8 +493,12 @@ func (s *server) streamZip(w http.ResponseWriter, resolved, name string) {
 
 // compressible reports whether content of mime type mt gains from lossless
 // compression (text, markup, structured data). Already-compressed payloads
-// (images, video, archives) are sent and stored as-is.
+// (images, video, archives) are sent and stored as-is. Parameters (e.g.
+// "application/json; charset=utf-8") are stripped before the match.
 func compressible(mt string) bool {
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = strings.TrimSpace(mt[:i])
+	}
 	if strings.HasPrefix(mt, "text/") {
 		return true
 	}
@@ -614,10 +621,12 @@ func (e *encodingWriter) WriteHeader(code int) {
 		e.ResponseWriter.WriteHeader(code)
 		return
 	}
+	// br 用默认级别而非 BestCompression:大 JSON 列表(数 MB)在最高级别
+	// 下压缩要数秒 CPU,默认级别(6)压缩比接近而速度与 gzip 相当。
 	switch enc := preferredEncoding(e.ae); enc {
 	case "br":
 		h.Set("Content-Encoding", "br")
-		e.codec = brotli.NewWriterLevel(e.ResponseWriter, brotli.BestCompression)
+		e.codec = brotli.NewWriterLevel(e.ResponseWriter, brotli.DefaultCompression)
 	case "gzip":
 		h.Set("Content-Encoding", "gzip")
 		e.codec, _ = gzip.NewWriterLevel(e.ResponseWriter, gzip.BestCompression)

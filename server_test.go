@@ -159,6 +159,96 @@ func TestFileServeContentType(t *testing.T) {
 	}
 }
 
+// TestAPIContentEncoding 覆盖 /api/list 与 /api/file 的 Accept-Encoding
+// 协商:可压缩内容(JSON 列表、文本文件)按客户端接受度以 br/gzip 编码
+// 传输,未声明时原样发送;Vary 头始终存在供缓存区分编码;Range 请求
+// 必须原样字节,绝不压缩。
+func TestAPIContentEncoding(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	// 一批重复度高的文件,让列表 JSON 有明显压缩空间
+	for i := range 50 {
+		writeFile(t, filepath.Join(root, "log"+strconv.Itoa(i)+".txt"), strings.Repeat("line of log\n", 20))
+	}
+
+	// gzip
+	rr := doGetAE(t, h, "/api/list?path=", "gzip")
+	assertStatus(t, rr, http.StatusOK)
+	if enc := rr.Header().Get("Content-Encoding"); enc != "gzip" {
+		t.Fatalf("list Content-Encoding = %q, want gzip", enc)
+	}
+	if vary := rr.Header().Get("Vary"); !strings.Contains(vary, "Accept-Encoding") {
+		t.Fatalf("Vary = %q, want Accept-Encoding", vary)
+	}
+	zr, err := gzip.NewReader(rr.Body)
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	got, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("gzip read: %v", err)
+	}
+	var resp listResponse
+	if err := json.Unmarshal(got, &resp); err != nil {
+		t.Fatalf("decompressed list: bad json: %v", err)
+	}
+	if len(resp.Entries) != 50 {
+		t.Fatalf("entries = %d, want 50", len(resp.Entries))
+	}
+
+	// br 优先于 gzip
+	rr = doGetAE(t, h, "/api/list?path=", "gzip, br")
+	assertStatus(t, rr, http.StatusOK)
+	if enc := rr.Header().Get("Content-Encoding"); enc != "br" {
+		t.Fatalf("list Content-Encoding = %q, want br (better ratio wins)", enc)
+	}
+	if _, err := io.ReadAll(brotli.NewReader(rr.Body)); err != nil {
+		t.Fatalf("brotli read: %v", err)
+	}
+
+	// 未声明 Accept-Encoding:原样发送,但仍带 Vary
+	rr = doGet(t, h, "/api/list?path=")
+	assertStatus(t, rr, http.StatusOK)
+	if enc := rr.Header().Get("Content-Encoding"); enc != "" {
+		t.Fatalf("list Content-Encoding = %q, want none", enc)
+	}
+	if vary := rr.Header().Get("Vary"); !strings.Contains(vary, "Accept-Encoding") {
+		t.Fatalf("Vary = %q, want Accept-Encoding even without encoding", vary)
+	}
+
+	// 文本文件经 /api/file 压缩
+	content := strings.Repeat("hello viewit\n", 100)
+	writeFile(t, filepath.Join(root, "notes.txt"), content)
+	rr = doGetAE(t, h, "/api/file?path=notes.txt", "gzip")
+	assertStatus(t, rr, http.StatusOK)
+	if enc := rr.Header().Get("Content-Encoding"); enc != "gzip" {
+		t.Fatalf("file Content-Encoding = %q, want gzip", enc)
+	}
+	zr, err = gzip.NewReader(rr.Body)
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	got, err = io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("gzip read: %v", err)
+	}
+	if string(got) != content {
+		t.Fatalf("decompressed file mismatch: got %d bytes, want %d", len(got), len(content))
+	}
+
+	// Range 请求不压缩(ServeContent 的 206 必须原样字节)
+	req := httptest.NewRequest("GET", "/api/file?path=notes.txt", nil)
+	req.Header.Set("Range", "bytes=0-9")
+	req.Header.Set("Accept-Encoding", "gzip")
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want 206", rr.Code)
+	}
+	if enc := rr.Header().Get("Content-Encoding"); enc != "" {
+		t.Fatalf("Range response Content-Encoding = %q, want none", enc)
+	}
+}
+
 func TestRawFileServesAtMirroredPath(t *testing.T) {
 	h, root := newTestHandler(t, false)
 	content := "<html><body>hi</body></html>"
