@@ -102,7 +102,7 @@
 
   $effect(() => {
     if (open && listEl) {
-      listEl.querySelector('.finder-row.active')?.scrollIntoView({ block: 'nearest' })
+      listEl.querySelector('.sel-row')?.scrollIntoView({ block: 'nearest' })
     }
   })
 
@@ -130,56 +130,56 @@
 </script>
 
 {#if open}
-  <div class="finder-overlay" role="dialog" aria-modal="true" aria-label="文件查找">
-    <div class="finder-panel">
+  <div class="fixed inset-0 z-[100] flex justify-center bg-[var(--vt-overlay)] pt-[12vh]" role="dialog" aria-modal="true" aria-label="文件查找">
+    <div class="flex max-h-[65vh] w-[min(680px,92vw)] flex-col overflow-hidden rounded-lg border border-edge bg-panel shadow-[0_16px_48px_rgba(0,0,0,0.5)]">
       <input
         bind:this={inputEl}
         bind:value={query}
-        class="finder-input"
+        class="m-2.5 rounded-md border border-edge bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
         placeholder={scope ? `在 ${scope}/ 中查找` : '输入关键字查找文件'}
         spellcheck="false"
         autocomplete="off"
       />
-      <div class="finder-meta">
+      <div class="px-3.5 pb-1.5">
         {#if partial}
-          <span class="finder-hint">索引中… 已收录 {indexed} 项</span>
+          <span class="text-xs text-muted">索引中… 已收录 {indexed} 项</span>
         {:else if query}
-          <span class="finder-hint">
+          <span class="text-xs text-muted">
             共 {scopeCount} 项，匹配 {matched} 条{truncated ? `，仅显示前 ${results.length}` : ''}
           </span>
         {:else}
-          <span class="finder-hint">
+          <span class="text-xs text-muted">
             {scope ? `在 ${scope}/ 内查找` : '全库查找'} · 共 {scopeCount} 项 · Ctrl+P / 三次 Shift 打开
           </span>
         {/if}
       </div>
-      <div class="finder-results" bind:this={listEl}>
+      <div class="min-h-[60px] overflow-y-auto border-t border-edge py-1 pb-2" bind:this={listEl}>
         {#if results.length}
           {#each results as r, i (r.path)}
             <div
-              class="finder-row"
-              class:active={i === active}
+              class="flex cursor-pointer items-center gap-2 whitespace-nowrap px-3 py-[5px] hover:bg-hover"
+              class:sel-row={i === active}
               onmouseenter={() => (active = i)}
               onclick={() => pick(r)}
             >
               {#if r.isDir}
-                <svg class="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+                <svg class="flex-none text-muted" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
               {:else}
-                <svg class="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
+                <svg class="flex-none text-muted" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
               {/if}
-              <span class="finder-path">
+              <span class="finder-path truncate">
                 {#each r.parts as p, pi (pi)}
                   {#if p.hit}
                     <mark>{p.t}</mark>
                   {:else}
-                    <span class={p.dir ? 'fz-dir' : 'fz-name'}>{p.t}</span>
+                    <span class={p.dir ? 'text-muted' : 'text-fg'}>{p.t}</span>
                   {/if}
                 {/each}
               </span>
             </div>
           {/each}
         {:else if query && !partial}
-          <div class="finder-hint">无匹配</div>
+          <div class="px-3.5 py-2.5 text-xs text-muted">无匹配</div>
         {/if}
       </div>
     </div>

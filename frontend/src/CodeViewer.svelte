@@ -2,6 +2,7 @@
   import hljs from 'highlight.js'
   import { fileUrl } from './api.js'
   import { codeLanguage, copyText, detectLanguage, languageFromMime, languageLabel } from './viewers.js'
+  import { isDark } from './theme.svelte.js'
 
   // svelte-jsoneditor is heavy (~600KB): load it only when a JSON file is viewed
   let JsonEditor = $state(null)
@@ -96,19 +97,21 @@
   }
 </script>
 
-<div class="viewer code-viewer">
+<div class="viewer flex flex-col">
   <div class="viewer-toolbar">
     <span class="toolbar-left">
       <span class="filename">{name}</span>
       {#if langLabel}<span class="filetype">{langLabel}</span>{/if}
     </span>
     {#if !tooBig && !error}
-      {#if isJson}
-        <button class="btn" onclick={toggleMode}>
-          {mode === 'code' ? '树形视图' : '代码视图'}
-        </button>
-      {/if}
-      <button class="btn" onclick={copy}>{copied ? '已复制' : '复制'}</button>
+      <span class="toolbar-actions">
+        {#if isJson}
+          <button class="btn" onclick={toggleMode}>
+            {mode === 'code' ? '树形视图' : '代码视图'}
+          </button>
+        {/if}
+        <button class="btn" onclick={copy}>{copied ? '已复制' : '复制'}</button>
+      </span>
     {/if}
   </div>
 
@@ -121,7 +124,7 @@
     </div>
   {:else}
     {#if isJson && mode === 'tree'}
-      <div class="json-tree">
+      <div class="json-tree" class:jse-theme-dark={isDark()}>
         {#if JsonEditor}
           <JsonEditor content={treeContent} readOnly={true} mode="tree" mainMenuBar={false} statusBar={false} />
         {:else}

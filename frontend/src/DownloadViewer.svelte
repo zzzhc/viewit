@@ -101,7 +101,7 @@
 {#if probing}
   <div class="hint">检查类型…</div>
 {:else if isText}
-  <div class="viewer code-viewer">
+  <div class="viewer flex flex-col">
     <div class="viewer-toolbar">
       <span class="toolbar-left">
         <span class="filename">{name}</span>
@@ -124,9 +124,9 @@
     {/if}
   </div>
 {:else}
-  <div class="viewer dl-viewer">
-    <p class="dl-name">{name}</p>
-    <p class="hint">
+  <div class="viewer flex flex-col items-center justify-center gap-4">
+    <p class="m-0 text-lg">{name}</p>
+    <p class="hint p-0">
       {#if ext}类型:{ext} · {/if}大小:{formatSize(size)} · 此类型暂不支持在线预览
     </p>
     <a class="btn" href={fileUrl(path)} download={name}>下载</a>

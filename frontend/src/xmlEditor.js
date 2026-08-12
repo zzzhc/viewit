@@ -25,19 +25,19 @@ function rangeField(cls, effect) {
 const matchField = rangeField('cm-xml-match', setMatch)
 const flashField = rangeField('cm-xml-flash', setFlash)
 
-// 深色主题，颜色取自 app.css 的 --bg/--bg-panel/--fg 变量值
-const darkTheme = EditorView.theme({
-  '&': { backgroundColor: '#1e1e1e', color: '#d4d4d4', height: '100%', fontSize: '13px' },
-  '.cm-content': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', caretColor: '#d4d4d4' },
-  '.cm-gutters': { backgroundColor: '#252526', color: '#6e7681', borderRight: '1px solid #333' },
-  '.cm-activeLine': { backgroundColor: 'rgba(255,255,255,0.04)' },
-  '.cm-activeLineGutter': { backgroundColor: 'rgba(255,255,255,0.04)', color: '#d4d4d4' },
+// 主题随 app.css 的 --vt-* 变量,深浅主题自动切换
+const theme = EditorView.theme({
+  '&': { backgroundColor: 'var(--vt-bg)', color: 'var(--vt-fg)', height: '100%', fontSize: '13px' },
+  '.cm-content': { fontFamily: 'var(--font-mono)', caretColor: 'var(--vt-fg)' },
+  '.cm-gutters': { backgroundColor: 'var(--vt-panel)', color: 'var(--vt-muted)', borderRight: '1px solid var(--vt-edge)' },
+  '.cm-activeLine': { backgroundColor: 'var(--vt-hover)' },
+  '.cm-activeLineGutter': { backgroundColor: 'var(--vt-hover)', color: 'var(--vt-fg)' },
   '&.cm-focused': { outline: 'none' },
-  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: '#264f78' },
-  '.cm-cursor': { borderLeftColor: '#d4d4d4' },
-  '.cm-foldPlaceholder': { backgroundColor: '#333', border: 'none', color: '#9d9d9d' },
-  '.cm-tooltip': { backgroundColor: '#252526', border: '1px solid #333', color: '#d4d4d4' },
-  '.cm-xml-match': { backgroundColor: 'rgba(79,140,255,0.35)' },
+  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--vt-selection)' },
+  '.cm-cursor': { borderLeftColor: 'var(--vt-fg)' },
+  '.cm-foldPlaceholder': { backgroundColor: 'var(--vt-panel)', border: 'none', color: 'var(--vt-muted)' },
+  '.cm-tooltip': { backgroundColor: 'var(--vt-panel)', border: '1px solid var(--vt-edge)', color: 'var(--vt-fg)' },
+  '.cm-xml-match': { backgroundColor: 'var(--vt-selection-soft)' },
   '.cm-xml-flash': { backgroundColor: 'rgba(240,200,60,0.4)' }
 }, { dark: true })
 
@@ -49,7 +49,7 @@ export function createXmlView(parent, doc) {
       xml(),
       matchField,
       flashField,
-      darkTheme,
+      theme,
       EditorState.readOnly.of(true),
       EditorView.editable.of(false)
     ]

@@ -1,8 +1,8 @@
 <script>
   import hljs from 'highlight.js'
-  import 'highlight.js/styles/github-dark.css'
   import { fileUrl } from './api.js'
   import { copyText } from './viewers.js'
+  import { isDark } from './theme.svelte.js'
 
   // marked/katex/mermaid are heavy: load them lazily, only when a markdown
   // file is actually opened (plain file browsing stays untouched).
@@ -86,7 +86,9 @@
     code({ text, lang }) {
       const info = (lang || '').split(/\s+/)[0].toLowerCase()
       if (info === 'mermaid') {
-        return `<div class="mermaid">${escapeHtml(text)}</div>`
+        // data-src 保存源码:主题切换重渲染时恢复用
+        const src = escapeHtml(text)
+        return `<div class="mermaid" data-src="${src}">${src}</div>`
       }
       const language = info && hljs.getLanguage(info) ? info : ''
       const highlighted = language
@@ -190,9 +192,11 @@
   }
 
   // Render mermaid diagrams once the HTML is in the DOM. The effect also
-  // re-runs when the preview pane is unfolded (previewEl goes null -> el).
+  // re-runs when the preview pane is unfolded (previewEl goes null -> el)
+  // and when the theme changes (isDark), re-rendering existing diagrams.
   $effect(() => {
     const h = html
+    const dark = isDark()
     if (!h || !previewEl) return
     const nodes = previewEl.querySelectorAll('.mermaid')
     if (nodes.length === 0) return
@@ -200,7 +204,14 @@
     ;(async () => {
       const mermaid = (await import('mermaid')).default
       if (cancelled) return
-      mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' })
+      mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'neutral', securityLevel: 'strict' })
+      // 恢复原始源码后再渲染:已渲染的 SVG 无法直接换主题;
+      // data-processed 是 mermaid 渲染过的标记,不清理会被 run 跳过
+      for (const n of nodes) {
+        const src = n.dataset.src
+        if (src !== undefined) n.textContent = src
+        n.removeAttribute('data-processed')
+      }
       try {
         await mermaid.run({ nodes: [...nodes] })
       } catch {
@@ -220,7 +231,7 @@
   }
 </script>
 
-<div class="viewer md-viewer">
+<div class="viewer flex flex-col">
   <div class="viewer-toolbar">
     <span class="toolbar-left">
       <span class="filename">{name}</span>
@@ -255,187 +266,23 @@
       <a class="btn" href={fileUrl(path)} download>下载</a>
     </div>
   {:else}
-    <div class="md-split">
+    <div class="flex min-h-0 flex-1">
       {#if showSource}
-        <div class="md-source">
-          <div class="code-wrap">
+        <div class="flex min-w-0 flex-1 border-r border-edge">
+          <div class="code-wrap min-w-0">
             <div class="gutter">
               {#each lineNums as n}<span>{n}</span>{/each}
             </div>
-            <pre><code>{@html sourceHtml}</code></pre>
+            <!-- soft-wrap the source so the left pane only ever scrolls vertically -->
+            <pre class="[white-space:pre-wrap] [word-break:break-word]"><code>{@html sourceHtml}</code></pre>
           </div>
         </div>
       {/if}
       {#if showPreview}
-        <div class="md-preview" bind:this={previewEl}>
+        <div class="min-w-0 flex-1 overflow-auto" bind:this={previewEl}>
           <div class="md-body">{@html html}</div>
         </div>
       {/if}
     </div>
   {/if}
 </div>
-
-<style>
-  .md-viewer {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .md-split {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-  }
-
-  .md-source {
-    flex: 1 1 50%;
-    min-width: 0;
-    display: flex;
-    border-right: 1px solid var(--border);
-    overflow: auto;
-  }
-
-  .md-source .code-wrap {
-    flex: 1;
-    min-width: 0;
-    overflow: visible; /* scrolling happens on .md-source */
-  }
-
-  /* soft-wrap the source so the left pane only ever scrolls vertically */
-  .md-source pre {
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  .md-preview {
-    flex: 1 1 50%;
-    min-width: 0;
-    overflow: auto;
-  }
-
-  .md-body {
-    width: 100%;
-    max-width: 900px;
-    margin: 0 auto;
-    padding: 20px 28px 64px;
-    font-size: 15px;
-    line-height: 1.7;
-  }
-
-  .toggle-btn.active {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: transparent;
-  }
-
-  .md-source::-webkit-scrollbar,
-  .md-preview::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-
-  .md-source::-webkit-scrollbar-thumb,
-  .md-preview::-webkit-scrollbar-thumb {
-    background: #454545;
-    border-radius: 5px;
-    border: 2px solid var(--bg);
-  }
-
-  .md-source::-webkit-scrollbar-thumb:hover,
-  .md-preview::-webkit-scrollbar-thumb:hover {
-    background: #5a5a5a;
-  }
-
-  .md-source::-webkit-scrollbar-corner,
-  .md-preview::-webkit-scrollbar-corner {
-    background: transparent;
-  }
-
-  :global(.md-body h1),
-  :global(.md-body h2) {
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 0.3em;
-  }
-  :global(.md-body h1) { font-size: 1.9em; margin: 0 0 0.6em; }
-  :global(.md-body h2) { font-size: 1.5em; margin: 1.4em 0 0.6em; }
-  :global(.md-body h3) { font-size: 1.25em; margin: 1.3em 0 0.5em; }
-  :global(.md-body h4) { font-size: 1.05em; margin: 1.2em 0 0.4em; }
-  :global(.md-body h5) { font-size: 0.95em; margin: 1.1em 0 0.4em; }
-  :global(.md-body h6) {
-    font-size: 0.85em;
-    margin: 1em 0 0.4em;
-    color: var(--fg-muted);
-  }
-  :global(.md-body p),
-  :global(.md-body ul),
-  :global(.md-body ol),
-  :global(.md-body blockquote),
-  :global(.md-body table),
-  :global(.md-body pre) {
-    margin: 0 0 16px;
-  }
-  :global(.md-body a) { color: var(--accent); }
-  :global(.md-body ul),
-  :global(.md-body ol) {
-    padding-left: 2em;
-  }
-  :global(.md-body li + li) { margin-top: 0.25em; }
-  :global(.md-body input[type='checkbox']) { margin-right: 0.4em; }
-  :global(.md-body code) {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 13px;
-    background: rgba(110, 118, 129, 0.25);
-    padding: 0.2em 0.4em;
-    border-radius: 4px;
-  }
-  :global(.md-body pre) {
-    background: #0d1117;
-    padding: 14px 16px;
-    border-radius: 6px;
-    overflow: auto;
-  }
-  :global(.md-body pre code) {
-    background: transparent;
-    padding: 0;
-    font-size: 13px;
-    line-height: 1.6;
-  }
-  :global(.md-body blockquote) {
-    border-left: 4px solid var(--border);
-    padding: 0 16px;
-    color: var(--fg-muted);
-  }
-  :global(.md-body table) {
-    border-collapse: collapse;
-    display: block;
-    max-width: 100%;
-    overflow: auto;
-  }
-  :global(.md-body th),
-  :global(.md-body td) {
-    border: 1px solid var(--border);
-    padding: 6px 12px;
-  }
-  :global(.md-body th) {
-    background: var(--bg-panel);
-    font-weight: 600;
-  }
-  :global(.md-body img) { max-width: 100%; }
-  :global(.md-body hr) {
-    border: none;
-    border-top: 1px solid var(--border);
-    margin: 24px 0;
-  }
-  :global(.md-body .mermaid) {
-    display: flex;
-    justify-content: center;
-    padding: 8px 0;
-    margin-bottom: 16px;
-    overflow-x: auto;
-  }
-  :global(.md-body .katex-display) {
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding: 4px 0;
-  }
-</style>

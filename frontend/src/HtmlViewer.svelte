@@ -136,7 +136,7 @@
   }
 </script>
 
-<div class="viewer html-viewer">
+<div class="viewer flex flex-col">
   <div class="viewer-toolbar">
     <span class="toolbar-left">
       <span class="filename">{name}</span>
@@ -178,14 +178,15 @@
       <a class="btn" href={fileUrl(path)} download>下载</a>
     </div>
   {:else}
-    <div class="html-split">
+    <div class="flex min-h-0 flex-1">
       {#if showSource}
-        <div class="html-source">
-          <div class="code-wrap">
+        <div class="flex min-w-0 flex-1 border-r border-edge">
+          <div class="code-wrap min-w-0">
             <div class="gutter">
               {#each lineNums as n}<span>{n}</span>{/each}
             </div>
-            <pre><code>{@html html}</code></pre>
+            <!-- soft-wrap the source so the left pane only ever scrolls vertically -->
+            <pre class="[white-space:pre-wrap] [word-break:break-word]"><code>{@html html}</code></pre>
           </div>
         </div>
       {/if}
@@ -216,56 +217,3 @@
     </div>
   {/if}
 </div>
-
-<style>
-  .html-viewer {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .html-split {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-  }
-
-  .html-source {
-    flex: 1 1 50%;
-    min-width: 0;
-    display: flex;
-    border-right: 1px solid var(--border);
-    overflow: auto;
-  }
-
-  .html-source .code-wrap {
-    flex: 1;
-    min-width: 0;
-  }
-
-  /* soft-wrap the source so the left pane only ever scrolls vertically */
-  .html-source pre {
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  .html-preview {
-    flex: 1 1 50%;
-    min-width: 0;
-    overflow: auto;
-    background: #fff;
-  }
-
-  .html-preview iframe {
-    display: block;
-    width: 100%;
-    height: 100%;
-    border: none;
-    background: #fff; /* 页面未设背景色时按白底预览 */
-  }
-
-  .toggle-btn.active {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: transparent;
-  }
-</style>

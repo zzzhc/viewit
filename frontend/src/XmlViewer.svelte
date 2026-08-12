@@ -201,14 +201,14 @@
   }
 </script>
 
-<div class="viewer xml-viewer">
+<div class="viewer flex flex-col">
   <div class="viewer-toolbar">
     <span class="toolbar-left">
       <span class="filename">{name}</span>
       <span class="filetype">XML</span>
     </span>
-    <div class="search-group">
-      <input class="xpath-input" bind:value={search}
+    <div class="flex min-w-0 flex-1 items-center justify-center gap-1.5 px-3">
+      <input class="w-full max-w-[560px] rounded border border-edge bg-bg px-2.5 py-1 font-mono text-[13px] text-fg outline-none focus:border-accent" bind:value={search}
              placeholder="XPath，如 //document-number 或 count(//*)"
              onkeydown={(e) => e.key === 'Enter' && runSearch()} />
       <button class="btn" onclick={runSearch}>搜索</button>
@@ -230,24 +230,24 @@
       <a class="btn" href={fileUrl(path)} download>下载</a>
     </div>
   {:else}
-    <div class="xml-status">
-      {#if parseError}<span class="err">解析失败：{parseError}</span>{/if}
-      {#if searchState === 'ok'}<span class="ok">{searchMsg} · {countText}</span>
-      {:else if searchState === 'scalar'}<span class="ok">{searchMsg}</span>
-      {:else if searchState === 'error'}<span class="err">{searchMsg}</span>
-      {:else if !parseError}<span class="muted">{countText}</span>{/if}
-      {#if treeDisabled}<span class="muted">节点过多(&gt;{MAX_TREE_ROWS})，已隐藏树形视图</span>{/if}
+    <div class="flex flex-none flex-wrap items-center gap-4 border-b border-edge bg-panel px-3 py-1 text-xs text-muted">
+      {#if parseError}<span class="text-danger">解析失败：{parseError}</span>{/if}
+      {#if searchState === 'ok'}<span class="text-ok">{searchMsg} · {countText}</span>
+      {:else if searchState === 'scalar'}<span class="text-ok">{searchMsg}</span>
+      {:else if searchState === 'error'}<span class="text-danger">{searchMsg}</span>
+      {:else if !parseError}<span>{countText}</span>{/if}
+      {#if treeDisabled}<span>节点过多(&gt;{MAX_TREE_ROWS})，已隐藏树形视图</span>{/if}
     </div>
-    <div class="xml-body">
+    <div class="flex min-h-0 flex-1">
       {#if !treeDisabled && rows.length}
-        <div class="xml-tree-pane">
-          <div class="tree-actions">
-            <button class="link-btn" onclick={expandAll}>全部展开</button>
-            <button class="link-btn" onclick={collapseAll}>全部折叠</button>
+        <div class="flex w-[320px] min-w-0 flex-none flex-col border-r border-edge bg-panel">
+          <div class="flex flex-none gap-2 border-b border-edge px-2 py-1">
+            <button class="cursor-pointer border-0 bg-transparent p-0.5 text-xs text-accent hover:underline" onclick={expandAll}>全部展开</button>
+            <button class="cursor-pointer border-0 bg-transparent p-0.5 text-xs text-accent hover:underline" onclick={collapseAll}>全部折叠</button>
           </div>
-          <div class="tree-rows">
+          <div class="flex-1 overflow-auto py-1 pb-3">
             {#each visibleRows as row (row.id)}
-              <div class:selected={row.id === selected} class:match={matches.has(row.id)}
+              <div class:sel-row={row.id === selected} class:match-row={matches.has(row.id)}
                    class="xml-tree-row" style="padding-left:{row.depth * 14 + 6}px"
                    onclick={() => selectRow(row)}>
                 {#if row.hasChildren}
