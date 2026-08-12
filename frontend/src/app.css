@@ -260,29 +260,15 @@ body {
   padding: 0 !important;
 }
 
+/* viewerjs renders an inline canvas inside this container */
 .image-viewer {
   background: #111;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: auto;
-  cursor: zoom-in;
+  position: relative;
 }
 
-.image-viewer img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-
-.image-viewer.natural {
-  display: block;
-  cursor: zoom-out;
-}
-
-.image-viewer.natural img {
-  max-width: none;
-  max-height: none;
+/* viewerjs inline mode does not hide the source image; its canvas replaces it */
+.image-viewer-source img {
+  display: none;
 }
 
 .media-viewer {
