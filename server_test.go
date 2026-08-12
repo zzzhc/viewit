@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/andybalholm/brotli"
 )
 
 func newTestHandler(t *testing.T, dev bool) (http.Handler, string) {
@@ -35,6 +38,16 @@ func writeFile(t *testing.T, path, content string) {
 func doGet(t *testing.T, h http.Handler, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("GET", target, nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
+// doGetAE issues GET with an Accept-Encoding header.
+func doGetAE(t *testing.T, h http.Handler, target, acceptEncoding string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("GET", target, nil)
+	req.Header.Set("Accept-Encoding", acceptEncoding)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	return rr
@@ -285,7 +298,7 @@ func TestDownloadFileGzip(t *testing.T) {
 	content := strings.Repeat("hello viewit\n", 2000) // ~28KB, compressible
 	writeFile(t, filepath.Join(root, "log.txt"), content)
 
-	rr := doGet(t, h, "/api/download?path=log.txt")
+	rr := doGetAE(t, h, "/api/download?path=log.txt", "gzip")
 	assertStatus(t, rr, http.StatusOK)
 	if rr.Header().Get("Content-Encoding") != "gzip" {
 		t.Fatalf("Content-Encoding = %q, want gzip", rr.Header().Get("Content-Encoding"))
@@ -314,7 +327,7 @@ func TestDownloadFileCompressedRatio(t *testing.T) {
 	content := strings.Repeat("aaaaaaaaaaaaaaaaaaaaaaaaaaaa\n", 10000) // highly repetitive
 	writeFile(t, filepath.Join(root, "rep.txt"), content)
 
-	rr := doGet(t, h, "/api/download?path=rep.txt")
+	rr := doGetAE(t, h, "/api/download?path=rep.txt", "gzip")
 	assertStatus(t, rr, http.StatusOK)
 	if rr.Body.Len() >= len(content) {
 		t.Fatalf("gzip body = %d bytes, want < %d (BestCompression should shrink repetitive text)", rr.Body.Len(), len(content))
@@ -495,5 +508,175 @@ func TestDownloadTraversalRejected(t *testing.T) {
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("path=%q: status = %d, want 400", p, rr.Code)
 		}
+	}
+}
+
+func TestPreferredEncoding(t *testing.T) {
+	cases := []struct {
+		ae   string
+		want string
+	}{
+		{"", ""},
+		{"gzip", "gzip"},
+		{"br", "br"},
+		{"gzip, br", "br"}, // better ratio wins
+		{"gzip;q=1.0, br;q=0.5", "gzip"},
+		{"br;q=0, gzip;q=1.0", "gzip"},
+		{"gzip;q=0", ""},
+		{"*", "br"},
+		{"*;q=0.5", "br"},
+		{"*;q=0", ""},
+		{"gzip;q=0.8, *;q=0", "gzip"}, // explicit entry beats the wildcard
+		{"identity", ""},
+		{"gzip;q=0, br;q=0, *;q=1", ""},           // explicit refusals beat the wildcard
+		{"deflate", ""},                           // unsupported coding: identity
+		{"gzip, br;q=0.5, deflate;q=0.1", "gzip"}, // client prefers gzip explicitly
+		{"gzip;q=0.5, br;q=0.5", "br"},            // tie: better ratio wins
+	}
+	for _, tc := range cases {
+		if got := preferredEncoding(tc.ae); got != tc.want {
+			t.Errorf("preferredEncoding(%q) = %q, want %q", tc.ae, got, tc.want)
+		}
+	}
+}
+
+func TestDownloadFileBrotli(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	content := strings.Repeat("hello viewit\n", 2000)
+	writeFile(t, filepath.Join(root, "log.txt"), content)
+
+	rr := doGetAE(t, h, "/api/download?path=log.txt", "br")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Header().Get("Content-Encoding") != "br" {
+		t.Fatalf("Content-Encoding = %q, want br", rr.Header().Get("Content-Encoding"))
+	}
+	if vary := rr.Header().Get("Vary"); !strings.Contains(vary, "Accept-Encoding") {
+		t.Fatalf("Vary = %q, want Accept-Encoding", vary)
+	}
+	got, err := io.ReadAll(brotli.NewReader(rr.Body))
+	if err != nil {
+		t.Fatalf("brotli decompress: %v", err)
+	}
+	if string(got) != content {
+		t.Fatalf("decompressed body mismatch: got %d bytes, want %d", len(got), len(content))
+	}
+}
+
+func TestDownloadFileBrotliPreferredOverGzip(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	writeFile(t, filepath.Join(root, "log.txt"), strings.Repeat("hello viewit\n", 2000))
+
+	// 客户端同时接受两种编码时,选择压缩比更好的 br
+	rr := doGetAE(t, h, "/api/download?path=log.txt", "gzip, br")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Header().Get("Content-Encoding") != "br" {
+		t.Fatalf("Content-Encoding = %q, want br (better ratio wins)", rr.Header().Get("Content-Encoding"))
+	}
+}
+
+func TestDownloadFileIdentityWhenNotAccepted(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	content := strings.Repeat("hello viewit\n", 2000)
+	writeFile(t, filepath.Join(root, "log.txt"), content)
+
+	for _, ae := range []string{"identity", "gzip;q=0, br;q=0"} {
+		rr := doGetAE(t, h, "/api/download?path=log.txt", ae)
+		assertStatus(t, rr, http.StatusOK)
+		if rr.Header().Get("Content-Encoding") != "" {
+			t.Fatalf("Accept-Encoding %q: Content-Encoding = %q, want none", ae, rr.Header().Get("Content-Encoding"))
+		}
+		if rr.Header().Get("Content-Length") != strconv.Itoa(len(content)) {
+			t.Fatalf("Accept-Encoding %q: Content-Length = %q, want %d", ae, rr.Header().Get("Content-Length"), len(content))
+		}
+		if rr.Body.String() != content {
+			t.Fatalf("Accept-Encoding %q: body mismatch", ae)
+		}
+	}
+}
+
+func TestDownloadFileVaryOnIdentity(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	writeFile(t, filepath.Join(root, "log.txt"), strings.Repeat("hello viewit\n", 100))
+
+	// 未声明 Accept-Encoding 时原样发送,但仍需 Vary 供缓存区分编码
+	rr := doGet(t, h, "/api/download?path=log.txt")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("Content-Encoding = %q, want none without Accept-Encoding", rr.Header().Get("Content-Encoding"))
+	}
+	if vary := rr.Header().Get("Vary"); !strings.Contains(vary, "Accept-Encoding") {
+		t.Fatalf("Vary = %q, want Accept-Encoding", vary)
+	}
+}
+
+func TestIndexCacheControl(t *testing.T) {
+	h, _ := newTestHandler(t, false)
+	want, err := fs.ReadFile(embedFS, "frontend/dist/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index: %v", err)
+	}
+
+	// HTML 入口必须回源校验
+	rr := doGet(t, h, "/")
+	assertStatus(t, rr, http.StatusOK)
+	if cc := rr.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", cc)
+	}
+
+	// 客户端接受 br 时以 br 压缩传输
+	rr = doGetAE(t, h, "/", "gzip, br")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Header().Get("Content-Encoding") != "br" {
+		t.Fatalf("Content-Encoding = %q, want br", rr.Header().Get("Content-Encoding"))
+	}
+	if rr.Header().Get("Content-Length") != "" {
+		t.Fatalf("Content-Length = %q, want absent on encoded response", rr.Header().Get("Content-Length"))
+	}
+	got, err := io.ReadAll(brotli.NewReader(rr.Body))
+	if err != nil {
+		t.Fatalf("brotli decompress: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("decompressed index mismatch: got %d bytes, want %d", len(got), len(want))
+	}
+}
+
+func TestAssetCacheControl(t *testing.T) {
+	h, _ := newTestHandler(t, false)
+	assets, err := fs.Glob(embedFS, "frontend/dist/assets/*.js")
+	if err != nil || len(assets) == 0 {
+		t.Fatalf("no embedded js assets: %v", err)
+	}
+	asset := strings.TrimPrefix(assets[0], "frontend/dist/")
+	want, err := fs.ReadFile(embedFS, assets[0])
+	if err != nil {
+		t.Fatalf("read %s: %v", assets[0], err)
+	}
+
+	// 哈希资源:不可变长缓存
+	rr := doGet(t, h, "/"+asset)
+	assertStatus(t, rr, http.StatusOK)
+	if cc := rr.Header().Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
+		t.Fatalf("Cache-Control = %q, want immutable", cc)
+	}
+	if !bytes.Equal(rr.Body.Bytes(), want) {
+		t.Fatalf("asset body mismatch: got %d bytes, want %d", rr.Body.Len(), len(want))
+	}
+
+	// 接受 br 时压缩传输,内容可解回原文
+	rr = doGetAE(t, h, "/"+asset, "br")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Header().Get("Content-Encoding") != "br" {
+		t.Fatalf("Content-Encoding = %q, want br", rr.Header().Get("Content-Encoding"))
+	}
+	if vary := rr.Header().Get("Vary"); !strings.Contains(vary, "Accept-Encoding") {
+		t.Fatalf("Vary = %q, want Accept-Encoding", vary)
+	}
+	got, err := io.ReadAll(brotli.NewReader(rr.Body))
+	if err != nil {
+		t.Fatalf("brotli decompress: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("decompressed asset mismatch: got %d bytes, want %d", len(got), len(want))
 	}
 }

@@ -41,3 +41,8 @@ cd frontend && npm install && npm run build   # 输出到 frontend/dist,下次 g
 ```bash
 go vet ./... && go test ./...
 ```
+
+## HTTP 细节
+
+- **内容编码协商**:响应按 `Accept-Encoding`(含 q 值)选择编码,平局时优先压缩比更好的 brotli(`br`),其次 gzip。单文件下载与前端静态资源均支持;已压缩格式(图片、视频、压缩包)原样传输。可压缩响应一律带 `Vary: Accept-Encoding` 供缓存区分。
+- **缓存策略**:`assets/` 下 Vite 内容哈希资源 `public, max-age=31536000, immutable`;`index.html` 与 SPA 回退 `no-cache`;API 响应 `no-store`。
