@@ -27,10 +27,12 @@ function connect() {
     }
     if (!msg || msg.type !== 'results') return
     for (const fn of listeners) fn(msg)
-    // 索引未完成时稍后重发,直到拿到全量结果
+    // 索引未完成时稍后重发,直到拿到全量结果。重发会触发服务端对已索引
+    // 部分的又一次全量模糊匹配(大目录下数百 ms),间隔不能太短:键击本身
+    // 已由输入防抖节流,这里只负责索引完成后的最终刷新。
     if (msg.partial && latestQ) {
       clearTimeout(partialTimer)
-      partialTimer = setTimeout(send, 400)
+      partialTimer = setTimeout(send, 1500)
     }
   }
   ws.onclose = () => {

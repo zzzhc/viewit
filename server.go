@@ -205,22 +205,21 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	// 目录列表不嗅探文件 MIME:每个文件一次 open+read 在 HDD 大目录下是
+	// 灾难(上万次磁盘寻道)。列表只需要 size/modTime/isDir;MIME 在点开
+	// 文件预览时由上面的单文件分支内容嗅探,仍以内容为准。
 	entries := make([]fileEntry, 0, len(dirEntries))
 	for _, de := range dirEntries {
 		info, err := de.Info()
 		if err != nil {
 			continue // unreadable entry: skip rather than fail the listing
 		}
-		fe := fileEntry{
+		entries = append(entries, fileEntry{
 			Name:    de.Name(),
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
 			IsDir:   info.IsDir(),
-		}
-		if !info.IsDir() {
-			fe.Mime = sniffMime(filepath.Join(resolved, de.Name()))
-		}
-		entries = append(entries, fe)
+		})
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].IsDir != entries[j].IsDir {

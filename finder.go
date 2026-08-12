@@ -107,15 +107,21 @@ func (ix *findIndex) walk(root string) {
 // for the whole tree). An empty query returns no matches but still reports
 // indexing progress.
 func (ix *findIndex) search(q, scope string) findResponse {
+	// 锁内只做快照(paths/dirs 引用与索引区间),匹配放到锁外:一次模糊
+	// 匹配可耗时数百 ms,若持读锁会阻塞 walk 的批量追加,拖慢索引构建。
+	// 切片引用共享底层数组,walk 只做尾部追加、不改动已有元素,快照安全。
 	ix.mu.RLock()
-	defer ix.mu.RUnlock()
-	resp := findResponse{Type: "results", Partial: !ix.done, Indexed: len(ix.paths)}
+	paths := ix.paths
+	dirs := ix.dirs
+	done := ix.done
 	lo, hi := ix.scopeRange(scope)
+	ix.mu.RUnlock()
+	resp := findResponse{Type: "results", Partial: !done, Indexed: len(paths)}
 	resp.ScopeCount = hi - lo
 	if q == "" {
 		return resp
 	}
-	matches, matched := bestMatches(q, ix.paths[lo:hi])
+	matches, matched := bestMatches(q, paths[lo:hi])
 	for i := range matches {
 		matches[i].Index += lo
 	}
@@ -125,7 +131,7 @@ func (ix *findIndex) search(q, scope string) findResponse {
 	for _, m := range matches {
 		resp.Matches = append(resp.Matches, findMatch{
 			Path:  m.Str,
-			IsDir: ix.dirs[m.Index],
+			IsDir: dirs[m.Index],
 			Marks: runeOffsets(m.Str, m.MatchedIndexes),
 		})
 	}
