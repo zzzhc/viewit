@@ -10,6 +10,7 @@
 
 ```bash
 ./build.sh                # 一键构建(自动安装前端依赖)
+./viewit --version        # 查看版本(取自 git tag,如 v1.0.0)
 ./viewit -root <目录>     # 监听 :8080,浏览器打开 http://localhost:8080
 ```
 
