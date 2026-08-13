@@ -7,10 +7,11 @@
   const MAX_SIZE = 5 * 1024 * 1024
   const PROBE_BYTES = 4096
 
-  let { path, name, size } = $props()
+  // force:用户在查看页手动指定了"下载"类型,跳过文本探测直接给下载提示页。
+  let { path, name, size, force = false } = $props()
 
   let ext = $derived(name.includes('.') ? name.split('.').pop().toUpperCase() : '')
-  let probing = $state(true)
+  let probing = $state(false)
   let isText = $state(false)
   let html = $state('')
   let text = $state('')
@@ -20,7 +21,13 @@
   let langLabel = $state('')
 
   $effect(() => {
-    probe()
+    if (force) {
+      // 手动指定"下载":跳过文本探测,清除自动探测的残留状态,直接给下载页。
+      probing = false
+      isText = false
+    } else {
+      probe()
+    }
   })
 
   // Unknown extension: sniff the head of the file; when it is plain UTF-8

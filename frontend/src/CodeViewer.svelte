@@ -13,7 +13,9 @@
 
   const MAX_SIZE = 5 * 1024 * 1024
 
-  let { path, name, mime } = $props()
+  // lang:用户在类型弹窗中手动指定的 hljs 语言(空=按名字/内容自动判断),
+  // 优先于 codeLanguage/mime/内容检测。
+  let { path, name, mime, lang = '' } = $props()
 
   let html = $state('')
   let lineNums = $state([])
@@ -27,6 +29,8 @@
   let treeContent = $derived({ text })
 
   $effect(() => {
+    void lang // 同步读取以建立依赖:forced 语言在 load 的 await 之后才读取,
+    // 不在此处读取的话,指定类型切换语言不会触发重载
     load()
   })
 
@@ -56,12 +60,18 @@
       const parts = text.split('\n')
       if (parts[parts.length - 1] === '') parts.pop() // trailing newline is not a line
       lineNums = Array.from({ length: parts.length }, (_, i) => i + 1)
-      const lang = codeLanguage(name)
-      if (lang) {
-        // known name: trust the mapping
-        html = hljs.highlight(text, { language: lang, ignoreIllegals: true }).value
-        langLabel = languageLabel(lang)
-        isJson = lang === 'json'
+      const forced = lang && hljs.getLanguage(lang) ? lang : ''
+      if (forced) {
+        html = hljs.highlight(text, { language: forced, ignoreIllegals: true }).value
+        langLabel = languageLabel(forced)
+        isJson = forced === 'json'
+      } else if (codeLanguage(name)) {
+        // known name: trust the mapping (用名字解析出的语言,不是 prop lang:
+        // 后者只在手动指定时非空,空串会触发 hljs "Unknown language")
+        const byName = codeLanguage(name)
+        html = hljs.highlight(text, { language: byName, ignoreIllegals: true }).value
+        langLabel = languageLabel(byName)
+        isJson = byName === 'json'
       } else if (languageFromMime(mime)) {
         // content sniffing pinned the language (e.g. application/json)
         const fromMime = languageFromMime(mime)

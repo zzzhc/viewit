@@ -347,6 +347,60 @@ export async function copyText(text) {
   return ok
 }
 
+// 手动指定查看类型(查看页弹窗)用的完整类型注册表:由各支持列表生成,
+// 条目 { name, view, lang }:name 是扩展名或全名(小写);view 是 App.svelte
+// 的分派分支;lang 是 hljs 语言名(仅 view === 'code' 有意义)。download
+// 不是真实文件类型,由弹窗底部固定提供"以文件下载方式打开"。
+export const FILE_TYPES = buildFileTypes()
+
+const VIEW_LABELS = {
+  image: '图片', video: '视频', audio: '音频', pdf: 'PDF',
+  xml: 'XML', markdown: 'Markdown', html: 'HTML', jsonl: 'JSONL',
+  code: '代码/文本', download: '下载'
+}
+
+export function viewTypeLabel(view) {
+  return VIEW_LABELS[view] || view
+}
+
+// 同名冲突时先注册者优先:IMAGE 先于 CODE_LANG(svg 是图片不是 XML);
+// viewerFor 的特殊分派分支覆盖 CODE_LANG 的语言归类(md 走 Markdown
+// 查看器而不是代码高亮)。
+function buildFileTypes() {
+  const map = new Map()
+  const put = (name, view, lang) => {
+    const key = name.toLowerCase()
+    if (!map.has(key)) map.set(key, { name: key, view, lang: lang || '' })
+  }
+  IMAGE.forEach((e) => put(e, 'image'))
+  VIDEO.forEach((e) => put(e, 'video'))
+  AUDIO.forEach((e) => put(e, 'audio'))
+  PDF.forEach((e) => put(e, 'pdf'))
+  // 纯文本族指定时强制 plaintext:txt/log/csv 等若留空 lang,手动指定后仍会
+  // 回落自动检测(如带 shebang 的 .sample 又按 bash 高亮),违背"指定"语义。
+  TEXT.forEach((e) => put(e, 'code', 'plaintext'))
+  for (const [name, lang] of Object.entries(CODE_LANG)) {
+    // viewerFor 的特殊分派分支优先:html 走 HTML 查看器,md 走 Markdown,
+    // 其余 xml 语言族进 XML 查看器
+    if (['html', 'htm', 'xhtml'].includes(name)) {
+      put(name, 'html')
+      continue
+    }
+    if (lang === 'xml') {
+      put(name, 'xml', 'xml')
+      continue
+    }
+    if (['md', 'markdown', 'mdx'].includes(name)) {
+      put(name, 'markdown', lang)
+      continue
+    }
+    put(name, 'code', lang)
+  }
+  put('jsonl', 'jsonl')
+  put('jsonlines', 'jsonl')
+  return [...map.values()]
+}
+
 export function viewerFor(name, mime) {
   // .gz 对前端透明:内层类型由剥掉 .gz 后的名字与服务器嗅探的内层 MIME
   // 决定(解压已在服务端完成)。前端不区分压缩与否。

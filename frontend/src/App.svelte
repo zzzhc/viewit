@@ -13,9 +13,10 @@
   import JsonlViewer from './JsonlViewer.svelte'
   import StreamViewer from './StreamViewer.svelte'
   import DownloadViewer from './DownloadViewer.svelte'
+  import TypePicker from './TypePicker.svelte'
   import { listDir, LIST_CHUNK } from './api.js'
   import { downloadUrl } from './api.js'
-  import { viewerFor } from './viewers.js'
+  import { viewerFor, viewTypeLabel } from './viewers.js'
   import { cycleTheme, themeLabel, themePref } from './theme.svelte.js'
 
   // path is relative to root: "/" or "sub" / "sub/inner.txt"
@@ -30,7 +31,11 @@
   let segs = $derived(path === '/' ? [] : path.split('/').filter(Boolean))
   // when load() resolves path to a file, path IS the file's full path
   let filePath = $derived(selected ? path : '')
-  let view = $derived(selected ? viewerFor(selected.name, selected.mime) : '')
+  // 手动指定的文件类型条目 { name, view, lang }(见 viewers.js FILE_TYPES),
+  // null=按内容嗅探+扩展名自动分派;仅对当前文件生效。
+  let overrideType = $state(null)
+  let typePickerOpen = $state(false)
+  let view = $derived(overrideType?.view || (selected ? viewerFor(selected.name, selected.mime) : ''))
   // 大文本文件统一走流式查看器:普通文件与 .gz 一视同仁(解压在服务端)。
   const STREAM_THRESHOLD = 5 * 1024 * 1024
   let streamable = $derived(
@@ -98,6 +103,12 @@
     path = pathFromHash()
   }
 
+  // 手动指定仅对当前文件生效:selected 引用变化(换文件/重载)即恢复自动,
+  // 避免一次指定影响后续文件的浏览。
+  $effect(() => {
+    if (selected) overrideType = null
+  })
+
   // 文件查找范围:目录页传当前目录,文件预览页取其父目录
   function finderBase() {
     if (!selected) return path
@@ -146,6 +157,15 @@
       {/each}
     </nav>
     {#if selected}
+      <button
+        type="button"
+        class="flex flex-none cursor-pointer items-center gap-1.5 rounded border border-edge bg-transparent px-2 py-1.5 text-[12px] text-muted hover:bg-hover hover:text-fg"
+        title="指定查看类型（仅对当前文件生效）"
+        onclick={() => (typePickerOpen = true)}
+      >
+        <svg class="flex-none" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" /></svg>
+        {overrideType ? overrideType.name : `${viewTypeLabel(view)} · 自动`}
+      </button>
       <a class="btn" href={downloadUrl(path)} download={selected.name}>下载</a>
     {/if}
     <button
@@ -186,7 +206,7 @@
       {:else if view === 'xml'}
         <XmlViewer path={filePath} name={selected.name} />
       {:else if view === 'code'}
-        <CodeViewer path={filePath} name={selected.name} mime={selected.mime} />
+        <CodeViewer path={filePath} name={selected.name} mime={selected.mime} lang={overrideType?.lang || ''} />
       {:else if view === 'markdown'}
         <MarkdownViewer path={filePath} name={selected.name} />
       {:else if view === 'html'}
@@ -194,7 +214,7 @@
       {:else if view === 'jsonl'}
         <JsonlViewer path={filePath} name={selected.name} />
       {:else}
-        <DownloadViewer path={filePath} name={selected.name} size={selected.size} />
+        <DownloadViewer path={filePath} name={selected.name} size={selected.size} force={overrideType?.view === 'download'} />
       {/if}
     {:else if dirMeta}
       <!-- key 按目录重建 FileList:分页状态随目录生命周期,无需重置逻辑 -->
@@ -205,4 +225,16 @@
   </main>
 
   <FileFinder onOpen={(p) => navigate(p)} base={finderBase()} />
+
+  {#if typePickerOpen && selected}
+    <TypePicker
+      autoLabel={viewTypeLabel(viewerFor(selected.name, selected.mime))}
+      active={overrideType}
+      onPick={(t) => {
+        overrideType = t
+        typePickerOpen = false
+      }}
+      onClose={() => (typePickerOpen = false)}
+    />
+  {/if}
 </div>
