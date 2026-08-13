@@ -88,3 +88,7 @@ go vet ./... && go test ./...
 
 - **内容编码协商**:API 与文件下载按 `Accept-Encoding`(含 q 值)选择编码,平局时优先压缩比更好的 brotli(`br`),其次 gzip;已压缩格式(图片、视频、压缩包)原样传输。可压缩响应一律带 `Vary: Accept-Encoding` 供缓存区分。前端静态资源在构建期已 gzip,固定以 `Content-Encoding: gzip` 下发(不参与 br 协商)。
 - **缓存策略**:`assets/` 下 Vite 内容哈希资源 `public, max-age=31536000, immutable`;`index.html` 与 SPA 回退 `no-cache`;API 响应 `no-store`。
+
+## 许可证
+
+[MIT](LICENSE)。
