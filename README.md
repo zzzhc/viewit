@@ -62,6 +62,20 @@ cd frontend && npm install && npm run build   # 输出到 frontend/dist,下次 g
 go vet ./... && go test ./...
 ```
 
+## 访问日志
+
+日志输出到 stderr(重定向 `2>viewit.log` 保存),分两类,均可按前缀 grep:
+
+- **`[access]`** — 每个 HTTP 请求一行:`远程地址 方法 URI 状态码 响应字节数 耗时`。覆盖全部路由(含 404/405);WebSocket(`/api/ws`、`/api/stream`)的耗时是整个会话时长,前端挂着不关的连接会暴露为长耗时。
+- **`[ws]`** — WebSocket 消息级日志:`/api/ws` 每条查询一行(`q` 关键字、`scope` 查找范围、`scopeCount` 范围内条目数、`matched` 命中数、耗时);`/api/stream` 每次打开一行(`stream-open`,含内容类型;打开失败记错误原因),读到结尾一行(`stream-end`,含累计字节与 open 到 end 的总耗时),读取中途出错一行(`stream-error`)。
+- **`[slow]`** — 耗时操作:tar 全量扫描(`scan-tar`,含条目数与失败原因)、大 zip 打开/大成员首次解压(`open-zip`/`extract-zip`)、查找索引构建(`find-walk`)、超过阈值的模糊查询(`find-query`)、目录打包下载(`zip-download`)、大 tar 磁盘索引解码(`tar-index-load`)。扫描类重操作无条件记录,其余超阈值才记(查询超阈值时与对应的 `[ws] find` 行同时出现)。
+
+慢日志阈值默认 1s,用 `-slow` 调整(如 `-slow 500ms` 抓更细的慢查询,`-slow 0` 记录全部):
+
+```bash
+./viewit -root <目录> -slow 500ms 2>viewit.log
+```
+
 ## HTTP 细节
 
 - **内容编码协商**:响应按 `Accept-Encoding`(含 q 值)选择编码,平局时优先压缩比更好的 brotli(`br`),其次 gzip。单文件下载与前端静态资源均支持;已压缩格式(图片、视频、压缩包)原样传输。可压缩响应一律带 `Vary: Accept-Encoding` 供缓存区分。

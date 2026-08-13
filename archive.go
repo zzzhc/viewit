@@ -8,6 +8,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -131,9 +132,20 @@ type zipArchive struct {
 }
 
 func openZipArchive(hostPath string) (*zipArchive, error) {
+	t0 := time.Now()
 	zr, err := zip.OpenReader(hostPath)
+	d := time.Since(t0)
 	if err != nil {
+		// 打开失败本身就要留痕:用户点开一个坏 zip 时,这是唯一的线索。
+		log.Printf("[slow] open-zip path=%s error=%v took=%s", hostPath, err, d.Round(time.Millisecond))
 		return nil, err
+	}
+	// 成功但慢:大 zip 读中央目录可能数百 ms,每次浏览都重新打开,重复
+	// 的 slow 行能暴露"每次列表都慢"。
+	if d >= slowThreshold {
+		if st, err := os.Stat(hostPath); err == nil {
+			log.Printf("[slow] open-zip path=%s size=%d took=%s", hostPath, st.Size(), d.Round(time.Millisecond))
+		}
 	}
 	return &zipArchive{hostPath: hostPath, zr: zr}, nil
 }
@@ -288,6 +300,9 @@ func (z *zipArchive) open(name string) (io.ReadSeekCloser, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 首次解压大成员(>16MiB)到磁盘缓存:GB 级成员要数秒,是无条件记的
+	// 重操作;视频等大文件的第一次 Range 请求会走到这里。
+	t0 := time.Now()
 	if _, err := io.Copy(tmp, rc); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
@@ -301,6 +316,9 @@ func (z *zipArchive) open(name string) (io.ReadSeekCloser, error) {
 		os.Remove(tmp.Name())
 		return nil, err
 	}
+	d := time.Since(t0)
+	log.Printf("[slow] extract-zip path=%s member=%s size=%d took=%s",
+		z.hostPath, name, size, d.Round(time.Millisecond))
 	fh, err := os.Open(cache)
 	if err != nil {
 		return nil, err
@@ -485,15 +503,27 @@ func (s *server) openTarArchive(hostPath string) (*tarArchive, error) {
 	cache := cacheFileFor(hostPath)
 	var ix *tarIndex
 	if st.Size() > archiveThreshold {
+		t0 := time.Now()
 		ix, _ = loadTarIndexCache(cache, st.Size(), st.ModTime())
+		// 磁盘索引解码是大档案(16MiB+)特有的开销,重复的 slow 行能暴露
+		// 缓存未命中导致的反复重扫。
+		if d := time.Since(t0); d >= slowThreshold {
+			log.Printf("[slow] tar-index-load path=%s size=%d took=%s", hostPath, st.Size(), d.Round(time.Millisecond))
+		}
 	}
 	if ix == nil {
+		// 全量扫描是整个 tar 浏览最重的操作(多 GB 档案可达数十秒),无论
+		// 成败都留痕:失败行说明档案损坏,成功行用于对比两次扫描的耗时。
+		t0 := time.Now()
 		entries, err := scanTar(bufio.NewReaderSize(f, scanBufSize))
+		d := time.Since(t0)
 		if err != nil {
+			log.Printf("[slow] scan-tar path=%s size=%d error=%v took=%s", hostPath, st.Size(), err, d.Round(time.Millisecond))
 			f.Close()
 			return nil, err
 		}
 		ix = newTarIndex(entries)
+		log.Printf("[slow] scan-tar path=%s size=%d entries=%d took=%s", hostPath, st.Size(), len(entries), d.Round(time.Millisecond))
 		if st.Size() > archiveThreshold {
 			_ = writeTarIndexCache(cache, st.Size(), st.ModTime(), ix) // best effort
 		}

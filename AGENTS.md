@@ -37,6 +37,7 @@ go vet ./... && go test ./...
 - MIME 以内容嗅探(`sniffMime`)为准,扩展名仅供参考。
 - 前端:纯逻辑放普通 JS 模块,UI 在 `.svelte`(`viewers.js`/`xmlTree.js`/`format.js`/`finder.js` 均无 UI);`api.js` 是唯一 fetch 入口,非 2xx 抛带服务端消息的 Error;代码/XML 查看器 5MB 上限超限提示下载;UI 文案中文。
 - 无 lint/format 配置、无 CI、无 Makefile——改动后自测靠 `go test`。
+- 日志:标准库 `log` 输出到 stderr。`[access]` 每请求一行(见 `accesslog.go` 的 `accessLog` 中间件);`[ws]` 记 WebSocket 消息级日志(finder 每条查询、stream 每次 open/end/error,见 `finder.go`/`stream.go`);`[slow]` 记耗时操作(tar 全量扫描、大 zip 打开/解压、索引构建、慢模糊查询、目录打包下载),重操作无条件记,其余超 `slowThreshold`(main 的 `-slow` flag)才记;新增可能耗时的操作时补一条 `[slow]` 日志,便于从日志定位性能问题。
 - Svelte 5 陷阱:`$effect` 只跟踪同步读到的 `$state`,异步回调(如 `setTimeout`)内的读取不会触发重跑——防抖等场景需在 effect 体内先同步取一次值。
 
 ## Important Files

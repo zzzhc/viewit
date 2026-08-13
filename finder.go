@@ -3,6 +3,7 @@ package main
 import (
 	"container/heap"
 	"io/fs"
+	"log"
 	"net/http"
 	"path/filepath"
 	"runtime"
@@ -65,6 +66,10 @@ func (ix *findIndex) start(root string) {
 // control internals bulk up the index and are never useful search targets.
 // Batches are appended under lock so searches stay consistent.
 func (ix *findIndex) walk(root string) {
+	// 索引构建是搜索"为什么慢"的根源:大目录树全量遍历可达数秒到数十秒,
+	// 期间查询都是部分结果。整个生命周期只走一次,无条件记。
+	t0 := time.Now()
+	var total int
 	const batch = 512
 	var paths []string
 	var dirs []bool
@@ -72,6 +77,7 @@ func (ix *findIndex) walk(root string) {
 		if len(paths) == 0 {
 			return
 		}
+		total += len(paths)
 		ix.mu.Lock()
 		ix.paths = append(ix.paths, paths...)
 		ix.dirs = append(ix.dirs, dirs...)
@@ -100,6 +106,7 @@ func (ix *findIndex) walk(root string) {
 	ix.mu.Lock()
 	ix.done = true
 	ix.mu.Unlock()
+	log.Printf("[slow] find-walk root=%s entries=%d took=%s", root, total, time.Since(t0).Round(time.Millisecond))
 }
 
 // search returns the best matches for q against the current index, limited
@@ -340,7 +347,19 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		if err := conn.ReadJSON(&msg); err != nil {
 			return // read error, bad JSON, or deadline: drop the client
 		}
-		if err := conn.WriteJSON(s.idx.search(msg.Q, msg.Path)); err != nil {
+		// 每条查询记一行 [ws] 日志:q/scope 定位到是哪次查询、在哪个目录,
+		// 耗时与命中数判断是匹配慢还是结果少。查询高频,再按阈值补一条
+		// [slow] 行,让慢查询有独立 grep 面。
+		t0 := time.Now()
+		resp := s.idx.search(msg.Q, msg.Path)
+		d := time.Since(t0)
+		log.Printf("[ws] find q=%q scope=%q scopeCount=%d matched=%d took=%s",
+			truncateForLog(msg.Q, 100), msg.Path, resp.ScopeCount, resp.Matched, d.Round(time.Microsecond))
+		if d >= slowThreshold {
+			log.Printf("[slow] find-query q=%q scope=%q indexed=%d scopeCount=%d matched=%d took=%s",
+				truncateForLog(msg.Q, 100), msg.Path, resp.Indexed, resp.ScopeCount, resp.Matched, d.Round(time.Millisecond))
+		}
+		if err := conn.WriteJSON(resp); err != nil {
 			return
 		}
 	}

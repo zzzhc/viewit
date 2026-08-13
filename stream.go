@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -174,6 +175,8 @@ func (s *server) handleStream(w http.ResponseWriter, r *http.Request) {
 		stream *streamState
 		total  int64
 		eof    bool
+		path   string // 当前 open 的 root-relative 路径,用于日志
+		openAt time.Time
 	)
 	closeStream := func() {
 		if stream != nil {
@@ -182,6 +185,8 @@ func (s *server) handleStream(w http.ResponseWriter, r *http.Request) {
 		}
 		total = 0
 		eof = false
+		path = ""
+		openAt = time.Time{}
 	}
 	defer closeStream()
 
@@ -195,12 +200,20 @@ func (s *server) handleStream(w http.ResponseWriter, r *http.Request) {
 		switch msg.Type {
 		case "open":
 			closeStream()
+			t0 := time.Now()
 			st, err := s.openStream(msg.Path)
+			d := time.Since(t0)
 			if err != nil {
+				// 打不开的路径(含损坏的 .gz)必须留痕,这是唯一的线索。
+				log.Printf("[ws] stream-open path=%q error=%v took=%s", msg.Path, err, d.Round(time.Microsecond))
 				send(map[string]any{"type": "error", "error": err.Error()})
 				continue
 			}
 			stream = st
+			path = msg.Path
+			openAt = t0
+			log.Printf("[ws] stream-open path=%q name=%v mime=%v took=%s",
+				msg.Path, st.meta["name"], st.meta["mime"], d.Round(time.Microsecond))
 			if !send(st.meta) {
 				return
 			}
@@ -228,6 +241,7 @@ func (s *server) handleStream(w http.ResponseWriter, r *http.Request) {
 					if rerr == io.EOF {
 						eof = true
 					} else {
+						log.Printf("[ws] stream-error path=%q error=%v", path, rerr)
 						send(map[string]any{"type": "error", "error": rerr.Error()})
 						return
 					}
@@ -245,6 +259,8 @@ func (s *server) handleStream(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if eof {
+				// 首次读到结尾才记:后续重复 more 走开头 eof 分支,不重复打日志。
+				log.Printf("[ws] stream-end path=%q size=%d took=%s", path, total, time.Since(openAt).Round(time.Microsecond))
 				send(map[string]any{"type": "end", "size": total})
 			}
 		}

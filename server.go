@@ -12,6 +12,7 @@ import (
 	"github.com/andybalholm/brotli"
 	"io"
 	"io/fs"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -105,7 +106,9 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	})
 	mux.Handle("GET /{$}", withFrontendEncoding(http.HandlerFunc(s.handleIndex)))
 	mux.Handle("GET /", withFrontendEncoding(http.HandlerFunc(s.handleSPA)))
-	return mux, nil
+	// 最外层包访问日志:任何路由(含 404/405)都记一行,耗时覆盖到
+	// handler 完全返回为止(WebSocket 即整个会话)。
+	return accessLog(mux), nil
 }
 
 // allowNullOrigin adds permissive CORS headers only when the request's
@@ -252,7 +255,7 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, listResponse{
 				Path:  cp,
 				IsDir: false,
-				File: &fileEntry{Name: name, Size: size, ModTime: st.ModTime(), IsDir: false, Mime: mime},
+				File:  &fileEntry{Name: name, Size: size, ModTime: st.ModTime(), IsDir: false, Mime: mime},
 			})
 			return
 		}
@@ -630,6 +633,16 @@ func (s *server) streamFile(w http.ResponseWriter, r *http.Request, resolved str
 // escaping root are dropped. Failures mid-stream abort the response (the
 // status is already committed, so the client just sees a truncated archive).
 func (s *server) streamZip(w http.ResponseWriter, resolved, name string) {
+	// 目录打包下载:大目录遍历 + 逐文件压缩,服务端开销与目录规模成正比;
+	// 超阈值时记下打包规模,与 access log 里的响应耗时互相印证。
+	t0 := time.Now()
+	var zipped int64
+	defer func() {
+		if d := time.Since(t0); d >= slowThreshold {
+			log.Printf("[slow] zip-download dir=%s entries=%d took=%s", resolved, zipped, d.Round(time.Millisecond))
+		}
+	}()
+
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name + ".zip"}))
 
@@ -664,6 +677,7 @@ func (s *server) streamZip(w http.ResponseWriter, resolved, name string) {
 		if err != nil {
 			return nil
 		}
+		zipped++
 		zpath := name + "/" + filepath.ToSlash(rel)
 		if d.IsDir() {
 			_, err := zw.Create(zpath + "/")

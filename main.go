@@ -4,13 +4,16 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"time"
 )
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	root := flag.String("root", ".", "directory to serve")
 	dev := flag.Bool("dev", false, "dev mode: API only (frontend served by Vite on :5173)")
+	slow := flag.Duration("slow", time.Second, "log operations slower than this (e.g. 500ms; 0 logs all)")
 	flag.Parse()
+	slowThreshold = *slow
 
 	h, err := newHandler(*root, *dev)
 	if err != nil {
