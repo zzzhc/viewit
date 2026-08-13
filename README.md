@@ -33,11 +33,11 @@ Go 静态文件浏览器:在浏览器里直接查看文件(图片、视频、音
 ## 生产模式
 
 ```bash
-go build -o viewit .   # 依赖 sahilm/fuzzy、gorilla/websocket,go mod tidy 已就绪
+./build.sh                  # 完整构建:前端 + 预 gzip + 编译裁剪(静态、stripped)
 ./viewit -root <目录> -addr :8080
 ```
 
-打开 `http://localhost:8080`。前端已内嵌,单二进制分发,无任何外部依赖。
+打开 `http://localhost:8080`。前端已内嵌,静态单二进制分发,无任何外部依赖。
 
 ## 开发模式(前端 HMR)
 
@@ -52,10 +52,12 @@ Vite 的 `/api` 代理默认指向 `:8080`,后端端口不同时用环境变量�
 
 ## 前端构建
 
+`./build.sh` 一键完成以下三步(首次自动 `npm install`):
+
 ```bash
 cd frontend && npm install && npm run build   # 输出到 frontend/dist
 go generate .                                 # 预 gzip 成 frontend/dist.gz(BestCompression)
-go build -o viewit .                          # 嵌入压缩后的 frontend/dist.gz
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o viewit .   # 嵌入并裁剪
 ```
 
 `frontend/dist` 里的可压缩资源(JS/CSS/HTML/SVG/JSON 等)在嵌入前被 gzip 成

@@ -25,19 +25,18 @@ Go 静态文件浏览器:单二进制(`go:embed frontend/dist.gz`,可压缩资�
 README.md 已有完整命令(构建/运行/dev/测试),此处只列易错点:
 
 ```bash
-cd frontend && npm install && npm run build   # 必须先于 go build
-go generate .                                 # 生成 frontend/dist.gz(预 gzip)
+./build.sh                     # 完整构建 + 裁剪(前端 → go generate → CGO_ENABLED=0 -trimpath -s -w)
 go vet ./... && go test ./...
 ```
 
-**陷阱**: 克隆后不先 `cd frontend && npm run build && go generate .` 则 `go:embed`(嵌 `frontend/dist.gz`)编译失败。`embedgen.go` 带 `//go:build ignore` 标签,不参与构建,仅由 `go generate` 调用。
+**陷阱**: 克隆后不先跑 `./build.sh`(或手动 `cd frontend && npm run build && go generate .`)则 `go:embed`(嵌 `frontend/dist.gz`)编译失败。`embedgen.go` 带 `//go:build ignore` 标签,不参与构建,仅由 `go generate` 调用。
 
 ## Code Conventions & Common Patterns
 
 - Go:handler 为 `*server` 方法;哨兵错误(`errOutsideRoot`)经 `mapResolveErr` 映射状态码;JSON 错误统一 `writeErr` → `{"error": msg}`。
 - MIME 以内容嗅探(`sniffMime`)为准,扩展名仅供参考。
 - 前端:纯逻辑放普通 JS 模块,UI 在 `.svelte`(`viewers.js`/`xmlTree.js`/`format.js`/`finder.js` 均无 UI);`api.js` 是唯一 fetch 入口,非 2xx 抛带服务端消息的 Error;代码/XML 查看器 5MB 上限超限提示下载;UI 文案中文。
-- 无 lint/format 配置、无 CI、无 Makefile——改动后自测靠 `go test`。
+- 无 lint/format 配置、无 CI、无 Makefile(构建用 `./build.sh`)——改动后自测靠 `go test`。
 - 日志:标准库 `log` 输出到 stderr。`[access]` 每请求一行(见 `accesslog.go` 的 `accessLog` 中间件);`[ws]` 记 WebSocket 消息级日志(finder 每条查询、stream 每次 open/end/error,见 `finder.go`/`stream.go`);`[slow]` 记耗时操作(tar 全量扫描、大 zip 打开/解压、索引构建、慢模糊查询、目录打包下载),重操作无条件记,其余超 `slowThreshold`(main 的 `-slow` flag)才记;新增可能耗时的操作时补一条 `[slow]` 日志,便于从日志定位性能问题。
 - Svelte 5 陷阱:`$effect` 只跟踪同步读到的 `$state`,异步回调(如 `setTimeout`)内的读取不会触发重跑——防抖等场景需在 effect 体内先同步取一次值。
 
@@ -51,7 +50,7 @@ go vet ./... && go test ./...
 
 ## Runtime/Tooling Preferences
 
-Go 1.26.5 + `sahilm/fuzzy`、`gorilla/websocket`(唯一两个 Go 依赖);前端 Svelte 5 + Vite 8,npm 管理。交付物为 gitignore 的单二进制 `viewit`。
+Go 1.26.5 + `sahilm/fuzzy`、`gorilla/websocket`(唯一两个 Go 依赖);前端 Svelte 5 + Vite 8,npm 管理。交付物为 gitignore 的单二进制 `viewit`,经 `CGO_ENABLED=0 -trimpath -ldflags "-s -w"` 裁剪为静态 stripped 二进制。
 
 ## Testing & QA
 
