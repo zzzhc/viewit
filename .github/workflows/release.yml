@@ -1,0 +1,76 @@
+name: Release
+
+# 推送 v* tag(如 v1.0.0)时自动构建多平台二进制并创建 GitHub Release。
+# 版本号取自 tag 名,与 build.sh 的注入方式一致(-X main.version)。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # frontend/dist 与 dist.gz 均被 gitignore,但 go:embed 编译期要求
+      # frontend/dist.gz 存在,须先构建前端再 generate(与 ci.yml 一致)。
+      - name: Build frontend
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: Generate embedded assets
+        run: go generate .
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X main.version=$VERSION" \
+            -o viewit-${{ matrix.goos }}-${{ matrix.goarch }} .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viewit-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: viewit-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # merge-multiple 将各平台产物合并到 dist/,文件名互不冲突。
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/viewit-*
+          generate_release_notes: true

@@ -50,6 +50,7 @@ cd frontend && npm run dev                # Vite HMR,代理 /api 到 :8080
 go vet ./... && go test ./...
 ```
 
+- 发布:推送 `v*` tag(如 `git push origin v1.0.0`)后 GitHub Actions 自动构建 linux amd64/arm64 二进制并创建 Release,版本号取 tag 名,`viewit --version` 可查。
 - 单二进制:前端经 `go:embed` 内嵌,构建期预 gzip,运行时以 `Content-Encoding: gzip` 原样下发,不耗请求期 CPU。
 - 访问日志输出到 stderr,按前缀分三类可 grep:`[access]` 请求级、`[ws]` 消息级、`[slow]` 慢操作(阈值可用 `-slow` 调整)。
 
