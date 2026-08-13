@@ -12,8 +12,9 @@
   let error = $state('')
   let source
 
-  // TIFF 解码上限(与代码/XML 查看器 5MB 同思路):未压缩 RGBA 内存与解码
-  // 耗时随像素线性增长,超限拒绝预览(约 120MB/页、240MB 合计)
+  // TIFF 解码上限按像素计:未压缩 RGBA 内存与解码耗时随像素线性增长,
+  // 超限拒绝预览(30M 像素/页 ≈ 120MB、60M 合计 ≈ 240MB)。
+  // 文本类大文件可流式降级(5MB 仅分流阈值),TIFF 无流式路径,故设硬上限。
   const MAX_PAGE_PIXELS = 30_000_000
   const MAX_TOTAL_PIXELS = 60_000_000
   // 1x1 透明 GIF:TIFF 解码前的占位图。源 img 不能带真实 src(浏览器会预
