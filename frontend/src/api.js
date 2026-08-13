@@ -48,3 +48,43 @@ export function rawUrl(path) {
 export function downloadUrl(path) {
   return `/api/download?path=${encodeURIComponent(path)}`
 }
+
+// ---- LevelDB 控制台 ----
+
+// leveldbKeys 分页拉取 key 列表(排他游标):after 为上一页最后一个 key。
+// 返回 { keys: string[], hasMore: boolean }。
+export async function leveldbKeys(path, { prefix = '', after = '', limit = 500 } = {}) {
+  const q = [
+    `path=${encodeURIComponent(path)}`,
+    `prefix=${encodeURIComponent(prefix)}`,
+    `after=${encodeURIComponent(after)}`,
+    `limit=${limit}`,
+  ].join('&')
+  const res = await fetch(`/api/leveldb/keys?${q}`)
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    throw new Error((data && data.error) || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+// leveldbGet 返回单个 key 的值:{key,size,text?|base64?|tooBig?}。
+export async function leveldbGet(path, key) {
+  const res = await fetch(`/api/leveldb/get?path=${encodeURIComponent(path)}&key=${encodeURIComponent(key)}`)
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    throw new Error((data && data.error) || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+// leveldbDumpUrl 是流式 NDJSON 导出的下载 URL。
+export function leveldbDumpUrl(path, prefix) {
+  const q = `path=${encodeURIComponent(path)}&prefix=${encodeURIComponent(prefix)}`
+  return `/api/leveldb/dump?${q}`
+}
+
+// ldbName 生成导出文件名,与 Go 端 sanitizeName 同规则。
+export function ldbName(prefix) {
+  return 'dump-' + (prefix.replace(/[^A-Za-z0-9._-]+/g, '_') || 'all') + '.jsonl'
+}

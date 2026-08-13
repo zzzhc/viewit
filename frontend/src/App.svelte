@@ -13,6 +13,7 @@
   import JsonlViewer from './JsonlViewer.svelte'
   import StreamViewer from './StreamViewer.svelte'
   import DownloadViewer from './DownloadViewer.svelte'
+  import LevelDBViewer from './LevelDBViewer.svelte'
   import TypePicker from './TypePicker.svelte'
   import { listDir, LIST_CHUNK } from './api.js'
   import { downloadUrl } from './api.js'
@@ -21,14 +22,18 @@
 
   // path is relative to root: "/" or "sub" / "sub/inner.txt"
   let path = $state('/')
+  // leveldb 控制台模式:hash `#!leveldb/<path>` 指定的数据目录;非 null 时
+  // 整个界面进入控制台(不发 listDir、隐藏查找面板)。
+  let leveldbPath = $state(null)
   // 目录模式:首屏只取一页(limit=LIST_CHUNK),FileList 虚拟滚动按需拉取
   // 后续页;total 是排序后的全量条目数。
-  let dirMeta = $state(null) // { total, entries } | null
+  let dirMeta = $state(null) // { total, entries, leveldb } | null
   let selected = $state(null) // file entry being previewed
   let loading = $state(true)
   let error = $state('')
 
   let segs = $derived(path === '/' ? [] : path.split('/').filter(Boolean))
+  let ldbSegs = $derived(leveldbPath === '/' ? [] : (leveldbPath || '').split('/').filter(Boolean))
   // when load() resolves path to a file, path IS the file's full path
   let filePath = $derived(selected ? path : '')
   // 手动指定的文件类型条目 { name, view, lang }(见 viewers.js FILE_TYPES),
@@ -63,6 +68,7 @@
   }
 
   async function load() {
+    if (leveldbPath) return // leveldb 模式不发 listDir
     loading = true
     error = ''
     const t0 = performance.now()
@@ -70,7 +76,7 @@
       const data = await listDir(path, { limit: LIST_CHUNK })
       const t1 = performance.now()
       if (data.isDir) {
-        dirMeta = { total: data.total || 0, entries: data.entries || [] }
+        dirMeta = { total: data.total || 0, entries: data.entries || [], leveldb: !!data.leveldb }
         selected = null
       } else {
         selected = data.file
@@ -96,11 +102,16 @@
     navigate(segs.concat(name).join('/'))
   }
 
-  function onHashChange() {
-    // hashes that are not routes ("#section" in-page anchors) belong to the
-    // browser's default scroll behavior, not to the file router
-    if (!location.hash.startsWith('#/')) return
-    path = pathFromHash()
+  // 路由:#!leveldb/<path> 为 leveldb 控制台(前缀匹配,路径含 encodeURIComponent),
+  // #/<path> 为文件路由;其他 hash(#section 等)交给浏览器默认行为。
+  function applyHash() {
+    const h = location.hash
+    if (h.startsWith('#!leveldb/')) {
+      leveldbPath = decodeURIComponent(h.slice(10)) || null
+      return
+    }
+    leveldbPath = null
+    if (h.startsWith('#/')) path = pathFromHash()
   }
 
   // 手动指定仅对当前文件生效:selected 引用变化(换文件/重载)即恢复自动,
@@ -117,18 +128,20 @@
   }
 
   onMount(() => {
-    path = pathFromHash()
-    window.addEventListener('hashchange', onHashChange)
-    return () => window.removeEventListener('hashchange', onHashChange)
+    applyHash()
+    window.addEventListener('hashchange', applyHash)
+    return () => window.removeEventListener('hashchange', applyHash)
   })
 
   $effect(() => {
-    // reload whenever the routed path changes
-    load()
+    // reload whenever the routed path changes; leveldb 模式不发 listDir
+    if (!leveldbPath) load()
   })
 
   $effect(() => {
-    if (selected) document.title = selected.name
+    if (leveldbPath) {
+      document.title = (ldbSegs[ldbSegs.length - 1] || '') + ' · LevelDB 控制台'
+    } else if (selected) document.title = selected.name
     else if (path === '/') document.title = 'viewit'
     else document.title = segs[segs.length - 1]
   })
@@ -147,14 +160,26 @@
         class="cursor-pointer whitespace-nowrap border-0 bg-transparent p-0 font-sans text-[13px] text-accent hover:underline"
         onclick={() => navigate('/')}
       >/</button>
-      {#each segs as seg, i}
-        <button
-          type="button"
-          class="cursor-pointer whitespace-nowrap border-0 bg-transparent p-0 font-sans text-[13px] text-accent hover:underline"
-          onclick={() => navigate(segs.slice(0, i + 1).join('/'))}
-        >{seg}</button>
-        <span class="text-muted">/</span>
-      {/each}
+      {#if leveldbPath}
+        {#each ldbSegs as seg, i}
+          <button
+            type="button"
+            class="cursor-pointer whitespace-nowrap border-0 bg-transparent p-0 font-sans text-[13px] text-accent hover:underline"
+            onclick={() => navigate(ldbSegs.slice(0, i + 1).join('/'))}
+          >{seg}</button>
+          <span class="text-muted">/</span>
+        {/each}
+        <span class="rounded border border-edge bg-hover px-[7px] py-0.5 text-[11px] leading-none text-muted">LevelDB</span>
+      {:else}
+        {#each segs as seg, i}
+          <button
+            type="button"
+            class="cursor-pointer whitespace-nowrap border-0 bg-transparent p-0 font-sans text-[13px] text-accent hover:underline"
+            onclick={() => navigate(segs.slice(0, i + 1).join('/'))}
+          >{seg}</button>
+          <span class="text-muted">/</span>
+        {/each}
+      {/if}
     </nav>
     {#if selected}
       <button
@@ -167,6 +192,14 @@
         {overrideType ? overrideType.name : `${viewTypeLabel(view)} · 自动`}
       </button>
       <a class="btn" href={downloadUrl(path)} download={selected.name}>下载</a>
+    {/if}
+    {#if dirMeta?.leveldb && !leveldbPath}
+      <button
+        type="button"
+        class="btn"
+        title="打开 LevelDB 数据控制台"
+        onclick={() => (location.hash = '#!leveldb/' + encodeURIComponent(path))}
+      >LevelDB 控制台</button>
     {/if}
     <button
       type="button"
@@ -185,13 +218,15 @@
   </header>
 
   <main class="min-h-0 flex-1 overflow-auto">
-    {#if loading}
+    {#if loading && !leveldbPath}
       <div class="hint">加载中…</div>
-    {:else if error}
+    {:else if error && !leveldbPath}
       <div class="hint error">
         <p>{error}</p>
         <button class="btn" onclick={load}>重试</button>
       </div>
+    {:else if leveldbPath}
+      <LevelDBViewer path={leveldbPath} />
     {:else if selected}
       {#if streamable}
         <StreamViewer path={filePath} name={selected.name} />
@@ -224,7 +259,9 @@
     {/if}
   </main>
 
-  <FileFinder onOpen={(p) => navigate(p)} base={finderBase()} />
+  {#if !leveldbPath}
+    <FileFinder onOpen={(p) => navigate(p)} base={finderBase()} />
+  {/if}
 
   {#if typePickerOpen && selected}
     <TypePicker

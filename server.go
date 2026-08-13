@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,6 +34,9 @@ type server struct {
 	index    []byte         // gzipped index.html, served for index/SPA routes
 	idx      *findIndex     // fuzzy-find index, built lazily on first WS connection
 	tarStore *tarIndexStore // resident tar indexes, keyed by host path
+
+	ldbMu    sync.Mutex               // guards ldbCache
+	ldbCache map[string]*ldbEntry     // leveldb 只读句柄缓存,按规范路径
 }
 
 type fileEntry struct {
@@ -52,6 +56,7 @@ type listResponse struct {
 	Entries []fileEntry `json:"entries,omitempty"`
 	File    *fileEntry  `json:"file,omitempty"`
 	Images  []string    `json:"images,omitempty"` // images=1 时:目录下图片文件名(目录排序序),供图片查看器上一张/下一张切换
+	LevelDB bool        `json:"leveldb,omitempty"` // 真实目录模式:当前目录被识别为 leveldb 数据目录
 }
 
 // imageExts 是图片查看器"上一张/下一张"切换的扩展名集合,必须与
@@ -86,7 +91,7 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("root %q: %w", root, err)
 	}
-	s := &server{root: resolved, idx: &findIndex{}, tarStore: newTarIndexStore()}
+	s := &server{root: resolved, idx: &findIndex{}, tarStore: newTarIndexStore(), ldbCache: map[string]*ldbEntry{}}
 
 	dist, err := fs.Sub(embedFS, "frontend/dist.gz")
 	if err != nil {
@@ -109,6 +114,11 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	mux.Handle("GET /api/download", allowNullOrigin(http.HandlerFunc(s.handleDownload)))
 	mux.Handle("GET /api/ws", allowNullOrigin(http.HandlerFunc(s.handleWS)))
 	mux.Handle("GET /api/stream", allowNullOrigin(http.HandlerFunc(s.handleStream)))
+	// leveldb 控制台:keys/get 是 JSON,走编码协商;dump 是流式 NDJSON
+	// 附件(逐行 flush),与 /api/download 一样裸注册,不包 withFrontendEncoding。
+	mux.Handle("GET /api/leveldb/keys", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleLevelDBKeys))))
+	mux.Handle("GET /api/leveldb/get", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleLevelDBGet))))
+	mux.Handle("GET /api/leveldb/dump", allowNullOrigin(http.HandlerFunc(s.handleLevelDBDump)))
 	// preflight for null-origin CORS requests: the GET routes above do not
 	// match OPTIONS, so answer them here without reaching a handler
 	mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {
@@ -456,6 +466,7 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, listResponse{
 			Path: cp, IsDir: true, Total: total, Offset: offset, Entries: entries,
+			LevelDB: isLevelDBEntries(dirEntries),
 		})
 		return
 	}
