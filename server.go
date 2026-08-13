@@ -27,10 +27,11 @@ import (
 var errOutsideRoot = errors.New("path outside root")
 
 type server struct {
-	root  string // canonicalized, symlink-free root directory
-	dist  fs.FS  // embedded frontend/dist
-	index []byte
-	idx   *findIndex // fuzzy-find index, built lazily on first WS connection
+	root     string         // canonicalized, symlink-free root directory
+	dist     fs.FS          // embedded frontend/dist
+	index    []byte         // index.html served for SPA routes
+	idx      *findIndex     // fuzzy-find index, built lazily on first WS connection
+	tarStore *tarIndexStore // resident tar indexes, keyed by host path
 }
 
 type fileEntry struct {
@@ -67,7 +68,7 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("root %q: %w", root, err)
 	}
-	s := &server{root: resolved, idx: &findIndex{}}
+	s := &server{root: resolved, idx: &findIndex{}, tarStore: newTarIndexStore()}
 
 	dist, err := fs.Sub(embedFS, "frontend/dist")
 	if err != nil {
@@ -132,44 +133,85 @@ func (s *server) contains(p string) bool {
 	return p == s.root || strings.HasPrefix(p, s.root+string(filepath.Separator))
 }
 
-// resolve maps the ?path= query parameter to an absolute path inside root.
-func (s *server) resolve(r *http.Request) (string, error) {
-	return s.resolvePath(r.URL.Query().Get("path"))
+// location is the result of resolveVirtual: either a real filesystem path
+// (archive == false) or a member path inside a zip/tar file treated as a
+// directory (archive == true, inside is the slash path within it).
+type location struct {
+	hostPath string // absolute path to the archive file (archive) or the real file/dir
+	archive  bool   // hostPath is a .zip/.tar treated as a directory
+	inside   string // member path inside the archive ("" = archive root)
 }
 
-// resolvePath maps a root-relative path ("" or "/" meaning root) to an
-// absolute path inside root. Shared by the ?path= query API and the raw
-// /api/raw/{path...} route.
+// isArchivePath reports whether p names a zip or tar file by extension. The
+// extension is the user's intent signal: a file named *.zip/*.tar is meant to
+// be browsed as a directory, even if its content is malformed (which then
+// surfaces as a readable-archive error rather than a silent download).
+func isArchivePath(p string) bool {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".zip", ".tar":
+		return true
+	}
+	return false
+}
+
+// resolveVirtual maps a root-relative path ("" or "/" meaning root) to a
+// location. Real path segments are resolved with the same containment rules
+// as before; the first segment that names a zip/tar file becomes the archive
+// boundary and the remaining segments address a member inside it.
 //
-// Defense in depth:
+// Defense in depth (per component):
 //  1. String level: ".." elements and absolute paths (other than "/") are
 //     refused outright — they are never legitimate root-relative paths.
-//  2. EvalSymlinks follows symlinks, so the final target is checked.
+//  2. EvalSymlinks follows symlinks, so each component's final target is
+//     checked.
 //  3. The resolved target must equal root or live under root+"/".
-func (s *server) resolvePath(p string) (string, error) {
+func (s *server) resolveVirtual(p string) (location, error) {
 	if p == "" {
 		p = "/"
 	}
 	if p != "/" {
 		if strings.HasPrefix(p, "/") {
-			return "", errOutsideRoot
+			return location{}, errOutsideRoot
 		}
 		for _, seg := range strings.Split(p, "/") {
 			if seg == ".." {
-				return "", errOutsideRoot
+				return location{}, errOutsideRoot
 			}
 		}
 	}
 	clean := path.Clean("/" + p)
-	host := filepath.Join(s.root, filepath.FromSlash(clean))
-	resolved, err := filepath.EvalSymlinks(host)
-	if err != nil {
-		return "", err
+	segs := strings.Split(strings.TrimPrefix(clean, "/"), "/")
+	host := s.root
+	for i, seg := range segs {
+		if seg == "" {
+			continue
+		}
+		candidate := filepath.Join(host, filepath.FromSlash(seg))
+		resolved, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			return location{}, err
+		}
+		if !s.contains(resolved) {
+			return location{}, errOutsideRoot
+		}
+		st, err := os.Stat(resolved)
+		if err != nil {
+			return location{}, err
+		}
+		if st.IsDir() {
+			host = resolved
+			continue
+		}
+		if isArchivePath(resolved) {
+			return location{hostPath: resolved, archive: true, inside: strings.Join(segs[i+1:], "/")}, nil
+		}
+		if i+1 < len(segs) {
+			// a non-archive file cannot be a directory in the path
+			return location{}, errOutsideRoot
+		}
+		return location{hostPath: resolved}, nil
 	}
-	if !s.contains(resolved) {
-		return "", errOutsideRoot
-	}
-	return resolved, nil
+	return location{hostPath: host}, nil
 }
 
 // cleanURLPath returns the URL-style path (leading "/") for the response JSON.
@@ -183,48 +225,115 @@ func cleanURLPath(r *http.Request) string {
 
 func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	resolved, err := s.resolve(r)
+	loc, err := s.resolveVirtual(r.URL.Query().Get("path"))
 	if err != nil {
 		mapResolveErr(w, err)
 		return
 	}
-	st, err := os.Stat(resolved)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
 	cp := cleanURLPath(r)
-	if !st.IsDir() {
+
+	if !loc.archive {
+		st, err := os.Stat(loc.hostPath)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if !st.IsDir() {
+			writeJSON(w, http.StatusOK, listResponse{
+				Path:  cp,
+				IsDir: false,
+				File: &fileEntry{
+					Name: st.Name(), Size: st.Size(), ModTime: st.ModTime(), IsDir: false,
+					Mime: sniffMime(loc.hostPath),
+				},
+			})
+			return
+		}
+		dirEntries, err := os.ReadDir(loc.hostPath)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		// 目录列表不嗅探文件 MIME:每个文件一次 open+read 在 HDD 大目录下是
+		// 灾难(上万次磁盘寻道)。列表只需要 size/modTime/isDir;MIME 在点开
+		// 文件预览时由上面的单文件分支内容嗅探,仍以内容为准。
+		//
+		// 分页(limit/offset):排序只读 DirEntry(d_type 免 stat),stat 只对
+		// 页内条目做。大目录下首页从"stat 全部条目"降到"stat 一页",HDD
+		// 场景这是数量级差异;前端虚拟滚动按需拉页。
+		//
+		// zip/tar 文件视为目录:先为每个条目一次性判定 isDir(含归档),再
+		// 排序,避免在排序比较器里反复做路径拼接。
+		type view struct {
+			de    os.DirEntry
+			isDir bool
+		}
+		views := make([]view, len(dirEntries))
+		for i, de := range dirEntries {
+			isDir := de.IsDir()
+			if !isDir {
+				isDir = isArchivePath(filepath.Join(loc.hostPath, de.Name()))
+			}
+			views[i] = view{de: de, isDir: isDir}
+		}
+		sort.Slice(views, func(i, j int) bool {
+			if views[i].isDir != views[j].isDir {
+				return views[i].isDir // directories (and archives) first
+			}
+			return views[i].de.Name() < views[j].de.Name() // byte-wise ascending
+		})
+		total := len(views)
+		offset, limit := listRange(r)
+		if offset > total {
+			offset = total
+		}
+		end := total
+		if limit > 0 && offset+limit < end {
+			end = offset + limit
+		}
+		entries := make([]fileEntry, 0, end-offset)
+		for _, v := range views[offset:end] {
+			info, err := v.de.Info()
+			if err != nil {
+				continue // unreadable entry: skip rather than fail the listing
+			}
+			entries = append(entries, fileEntry{
+				Name:    v.de.Name(),
+				Size:    info.Size(),
+				ModTime: info.ModTime(),
+				IsDir:   v.isDir,
+			})
+		}
 		writeJSON(w, http.StatusOK, listResponse{
-			Path:  cp,
-			IsDir: false,
-			File: &fileEntry{
-				Name: st.Name(), Size: st.Size(), ModTime: st.ModTime(), IsDir: false,
-				Mime: sniffMime(resolved),
-			},
+			Path: cp, IsDir: true, Total: total, Offset: offset, Entries: entries,
 		})
 		return
 	}
-	dirEntries, err := os.ReadDir(resolved)
+
+	// 归档内部路径:hostPath 是 zip/tar 文件,inside 是其中的成员路径。
+	a, err := s.openArchive(loc.hostPath)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not a readable archive")
+		return
+	}
+	defer a.close()
+
+	if e, ok := a.stat(loc.inside); ok && !e.IsDir {
+		// 归档内单文件:嗅探成员内容定 MIME(与普通单文件分支一致)。
+		if rc, err := a.open(loc.inside); err == nil {
+			e.Mime = sniffMimeFrom(rc)
+			rc.Close()
+		}
+		writeJSON(w, http.StatusOK, listResponse{Path: cp, IsDir: false, File: &e})
+		return
+	}
+
+	entries, err := a.list(loc.inside)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	// 目录列表不嗅探文件 MIME:每个文件一次 open+read 在 HDD 大目录下是
-	// 灾难(上万次磁盘寻道)。列表只需要 size/modTime/isDir;MIME 在点开
-	// 文件预览时由上面的单文件分支内容嗅探,仍以内容为准。
-	//
-	// 分页(limit/offset):排序只读 DirEntry(d_type 免 stat),stat 只对
-	// 页内条目做。大目录下首页从"stat 全部条目"降到"stat 一页",HDD
-	// 场景这是数量级差异;前端虚拟滚动按需拉页。
-	sort.Slice(dirEntries, func(i, j int) bool {
-		di, dj := dirEntries[i], dirEntries[j]
-		if di.IsDir() != dj.IsDir() {
-			return di.IsDir() // directories first
-		}
-		return di.Name() < dj.Name() // byte-wise ascending
-	})
-	total := len(dirEntries)
+	total := len(entries)
 	offset, limit := listRange(r)
 	if offset > total {
 		offset = total
@@ -233,21 +342,8 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 	if limit > 0 && offset+limit < end {
 		end = offset + limit
 	}
-	entries := make([]fileEntry, 0, end-offset)
-	for _, de := range dirEntries[offset:end] {
-		info, err := de.Info()
-		if err != nil {
-			continue // unreadable entry: skip rather than fail the listing
-		}
-		entries = append(entries, fileEntry{
-			Name:    de.Name(),
-			Size:    info.Size(),
-			ModTime: info.ModTime(),
-			IsDir:   info.IsDir(),
-		})
-	}
 	writeJSON(w, http.StatusOK, listResponse{
-		Path: cp, IsDir: true, Total: total, Offset: offset, Entries: entries,
+		Path: cp, IsDir: true, Total: total, Offset: offset, Entries: entries[offset:end],
 	})
 }
 
@@ -266,12 +362,16 @@ func listRange(r *http.Request) (offset, limit int) {
 
 func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	resolved, err := s.resolve(r)
+	loc, err := s.resolveVirtual(r.URL.Query().Get("path"))
 	if err != nil {
 		mapResolveErr(w, err)
 		return
 	}
-	f, err := os.Open(resolved)
+	if loc.archive {
+		s.serveMember(w, r, loc, false)
+		return
+	}
+	f, err := os.Open(loc.hostPath)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
@@ -298,12 +398,16 @@ func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 // /api/file; directories are refused.
 func (s *server) handleRaw(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	resolved, err := s.resolvePath(strings.TrimPrefix(r.URL.Path, "/api/raw/"))
+	loc, err := s.resolveVirtual(strings.TrimPrefix(r.URL.Path, "/api/raw/"))
 	if err != nil {
 		mapResolveErr(w, err)
 		return
 	}
-	f, err := os.Open(resolved)
+	if loc.archive {
+		s.serveMember(w, r, loc, true)
+		return
+	}
+	f, err := os.Open(loc.hostPath)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
@@ -336,21 +440,103 @@ func (s *server) handleRaw(w http.ResponseWriter, r *http.Request) {
 // (brotli, then gzip) when its content is compressible, verbatim otherwise.
 func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	resolved, err := s.resolve(r)
+	loc, err := s.resolveVirtual(r.URL.Query().Get("path"))
 	if err != nil {
 		mapResolveErr(w, err)
 		return
 	}
-	st, err := os.Stat(resolved)
+	if loc.archive {
+		s.downloadMember(w, r, loc)
+		return
+	}
+	st, err := os.Stat(loc.hostPath)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	if st.IsDir() {
-		s.streamZip(w, resolved, st.Name())
+		s.streamZip(w, loc.hostPath, st.Name())
 		return
 	}
-	s.streamFile(w, r, resolved, st)
+	s.streamFile(w, r, loc.hostPath, st)
+}
+
+// serveMember streams one file member of a zip/tar archive through
+// ServeContent, so Range/206 (video seeking) works exactly as for real files.
+// pinExt mirrors handleRaw's behavior of pinning the MIME type by extension
+// (content sniffing cannot tell .js from .txt, and module scripts need a
+// JavaScript MIME type to run).
+func (s *server) serveMember(w http.ResponseWriter, r *http.Request, loc location, pinExt bool) {
+	a, err := s.openArchive(loc.hostPath)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	defer a.close()
+	if loc.inside == "" {
+		writeErr(w, http.StatusBadRequest, "is a directory")
+		return
+	}
+	e, ok := a.stat(loc.inside)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	if e.IsDir {
+		writeErr(w, http.StatusBadRequest, "is a directory")
+		return
+	}
+	rc, err := a.open(loc.inside)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	defer rc.Close()
+	if pinExt {
+		if mt := mime.TypeByExtension(strings.ToLower(filepath.Ext(e.Name))); mt != "" {
+			w.Header().Set("Content-Type", mt)
+		}
+	}
+	http.ServeContent(w, r, e.Name, e.ModTime, rc)
+}
+
+// downloadMember streams a download for a zip/tar path: the archive file
+// itself goes out verbatim (its own bytes, not a re-zip), a member is sent as
+// an attachment.
+func (s *server) downloadMember(w http.ResponseWriter, r *http.Request, loc location) {
+	if loc.inside == "" {
+		st, err := os.Stat(loc.hostPath)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		s.streamFile(w, r, loc.hostPath, st)
+		return
+	}
+	a, err := s.openArchive(loc.hostPath)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	defer a.close()
+	e, ok := a.stat(loc.inside)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	if e.IsDir {
+		writeErr(w, http.StatusBadRequest, "is a directory")
+		return
+	}
+	rc, err := a.open(loc.inside)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": e.Name}))
+	w.Header().Set("Content-Length", strconv.FormatInt(e.Size, 10))
+	io.Copy(w, rc)
 }
 
 // streamFile sends one file as an attachment. Compressible content goes out
