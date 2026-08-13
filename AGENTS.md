@@ -29,7 +29,7 @@ cd frontend && npm install && npm run build   # 必须先于 go build
 go vet ./... && go test ./...
 ```
 
-**陷阱**:`frontend/dist` 仅 `index.html` 入库,克隆后不先 `npm run build` 则 `go:embed` 编译失败。
+**陷阱**: 克隆后不先 `cd frontend && npm run build` 则 `go:embed` 编译失败。
 
 ## Code Conventions & Common Patterns
 
