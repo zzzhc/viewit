@@ -142,6 +142,46 @@ func TestStreamGzShort(t *testing.T) {
 	}
 }
 
+func TestStreamZipMember(t *testing.T) {
+	srv, root := newTestServer(t)
+	content := "[" + strings.Repeat(`{"id":1,"title":"中文标题"},`, 200) + "]"
+	writeZipFile(t, filepath.Join(root, "arch.zip"), map[string]string{
+		"sub/data.json": content,
+	})
+
+	conn := dialStream(t, srv)
+	meta, got := streamAll(t, conn, "arch.zip/sub/data.json")
+	if meta.Name != "data.json" {
+		t.Errorf("name = %q, want data.json", meta.Name)
+	}
+	if meta.Mime != "application/json" {
+		t.Errorf("mime = %q, want application/json", meta.Mime)
+	}
+	if got != content {
+		t.Fatalf("content mismatch: got %d bytes, want %d", len(got), len(content))
+	}
+}
+
+func TestStreamTarMember(t *testing.T) {
+	srv, root := newTestServer(t)
+	content := strings.Repeat("tar 文本行 中文内容\n", 500)
+	writeTarFile(t, filepath.Join(root, "arch.tar"), map[string]string{
+		"docs/notes.txt": content,
+	})
+
+	conn := dialStream(t, srv)
+	meta, got := streamAll(t, conn, "arch.tar/docs/notes.txt")
+	if meta.Name != "notes.txt" {
+		t.Errorf("name = %q, want notes.txt", meta.Name)
+	}
+	if !strings.HasPrefix(meta.Mime, "text/") {
+		t.Errorf("mime = %q, want text/*", meta.Mime)
+	}
+	if got != content {
+		t.Fatalf("content mismatch: got %d bytes, want %d", len(got), len(content))
+	}
+}
+
 func TestListGzTransparent(t *testing.T) {
 	h, root := newTestHandler(t, false)
 	content := `{"a":1,"b":"中文"}`

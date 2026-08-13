@@ -330,10 +330,8 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 
 	if e, ok := a.stat(loc.inside); ok && !e.IsDir {
 		// 归档内单文件:嗅探成员内容定 MIME(与普通单文件分支一致)。
-		if rc, err := a.open(loc.inside); err == nil {
-			e.Mime = sniffMimeFrom(rc)
-			rc.Close()
-		}
+		// 只读头部,绝不为了 MIME 解压整个成员(GB 级成员会解压到磁盘缓存)。
+		e.Mime = a.sniff(loc.inside)
 		writeJSON(w, http.StatusOK, listResponse{Path: cp, IsDir: false, File: &e})
 		return
 	}

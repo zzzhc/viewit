@@ -36,9 +36,9 @@ type streamMessage struct {
 // streamState 是一次 open 的流式读取状态:普通文件直接读原始字节,
 // .gz 文件透明 gzip 解压。前端不区分两者。
 type streamState struct {
-	src  io.Reader
-	f    *os.File
-	meta map[string]any
+	src   io.Reader
+	close func()
+	meta  map[string]any
 }
 
 // isGzPath 报告 p 是否为 .gz 文件(按扩展名,与内容无关)。
@@ -84,14 +84,15 @@ func gzInfo(path string) (mime string, size int64, ok bool) {
 }
 
 // openStream 解析 root-relative 路径并返回流式读取状态:.gz 透明解压,
-// 普通文件直接流式读字节。meta 下发内层 name/mime 供前端分派与语言检测。
+// 归档成员解压流式读取,普通文件直接流式读字节。meta 下发内层 name/mime
+// 供前端分派与语言检测。
 func (s *server) openStream(p string) (*streamState, error) {
 	loc, err := s.resolveVirtual(p)
 	if err != nil {
 		return nil, err
 	}
 	if loc.archive {
-		return nil, errors.New("not a file")
+		return s.openArchiveStream(loc)
 	}
 	f, err := os.Open(loc.hostPath)
 	if err != nil {
@@ -106,9 +107,9 @@ func (s *server) openStream(p string) (*streamState, error) {
 		}
 		inner := strings.TrimSuffix(name, filepath.Ext(name))
 		return &streamState{
-			src:  src,
-			f:    f,
-			meta: map[string]any{"type": "meta", "name": inner, "mime": mime},
+			src:   src,
+			close: func() { f.Close() },
+			meta:  map[string]any{"type": "meta", "name": inner, "mime": mime},
 		}, nil
 	}
 	// 普通文件:嗅探后回退,再流式读全量。
@@ -118,9 +119,46 @@ func (s *server) openStream(p string) (*streamState, error) {
 		return nil, err
 	}
 	return &streamState{
-		src:  f,
-		f:    f,
-		meta: map[string]any{"type": "meta", "name": name, "mime": mime},
+		src:   f,
+		close: func() { f.Close() },
+		meta:  map[string]any{"type": "meta", "name": name, "mime": mime},
+	}, nil
+}
+
+// openArchiveStream opens a file member inside a zip/tar archive for streaming.
+// The MIME is sniffed from the head (never the whole member) and the member is
+// decompressed on the fly, so a huge member streams its first chunk immediately
+// instead of being extracted to the disk cache first.
+func (s *server) openArchiveStream(loc location) (*streamState, error) {
+	a, err := s.openArchive(loc.hostPath)
+	if err != nil {
+		return nil, err
+	}
+	if loc.inside == "" {
+		a.close()
+		return nil, errors.New("is a directory")
+	}
+	e, ok := a.stat(loc.inside)
+	if !ok {
+		a.close()
+		return nil, os.ErrNotExist
+	}
+	if e.IsDir {
+		a.close()
+		return nil, errors.New("is a directory")
+	}
+	rc, err := a.stream(loc.inside)
+	if err != nil {
+		a.close()
+		return nil, err
+	}
+	return &streamState{
+		src: rc,
+		close: func() {
+			rc.Close()
+			a.close()
+		},
+		meta: map[string]any{"type": "meta", "name": e.Name, "mime": a.sniff(loc.inside)},
 	}, nil
 }
 
@@ -180,7 +218,7 @@ func (s *server) handleStream(w http.ResponseWriter, r *http.Request) {
 	)
 	closeStream := func() {
 		if stream != nil {
-			stream.f.Close()
+			stream.close()
 			stream = nil
 		}
 		total = 0

@@ -39,6 +39,13 @@ type archive interface {
 	stat(name string) (fileEntry, bool)
 	// open returns a seekable reader over the file member at name.
 	open(name string) (io.ReadSeekCloser, error)
+	// sniff reads only the head of the file member at name to type it, so a
+	// multi-GB member is never extracted just to sniff its MIME.
+	sniff(name string) string
+	// stream returns a sequential reader over the file member at name that
+	// decompresses on the fly. Unlike open, it never materializes the whole
+	// member, so the text stream viewer sees the first chunk immediately.
+	stream(name string) (io.ReadCloser, error)
 	close() error
 }
 
@@ -326,6 +333,30 @@ func (z *zipArchive) open(name string) (io.ReadSeekCloser, error) {
 	return &fileReadSeekCloser{File: fh}, nil
 }
 
+func (z *zipArchive) sniff(name string) string {
+	for _, e := range z.zr.File {
+		if strings.TrimSuffix(e.Name, "/") != name {
+			continue
+		}
+		rc, err := e.Open()
+		if err != nil {
+			return ""
+		}
+		defer rc.Close()
+		return sniffMimeFrom(rc)
+	}
+	return ""
+}
+
+func (z *zipArchive) stream(name string) (io.ReadCloser, error) {
+	for _, e := range z.zr.File {
+		if strings.TrimSuffix(e.Name, "/") == name {
+			return e.Open()
+		}
+	}
+	return nil, os.ErrNotExist
+}
+
 // ---------------------------------------------------------------------------
 // tar
 
@@ -438,6 +469,26 @@ func (ta *tarArchive) open(name string) (io.ReadSeekCloser, error) {
 	}
 	e := ta.ix.entries[i]
 	return &sectionReadSeekCloser{SectionReader: io.NewSectionReader(ta.f, e.Offset, e.Size)}, nil
+}
+
+func (ta *tarArchive) sniff(name string) string {
+	i, ok := ta.ix.find(name)
+	if !ok || ta.ix.entries[i].IsDir {
+		return ""
+	}
+	e := ta.ix.entries[i]
+	head := make([]byte, 512)
+	if e.Size < int64(len(head)) {
+		head = head[:int(e.Size)]
+	}
+	if _, err := ta.f.ReadAt(head, e.Offset); err != nil && err != io.EOF {
+		return ""
+	}
+	return sniffMimeFrom(bytes.NewReader(head))
+}
+
+func (ta *tarArchive) stream(name string) (io.ReadCloser, error) {
+	return ta.open(name)
 }
 
 // tarIndexStore keeps scanned tar indexes resident in memory across requests,
