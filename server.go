@@ -54,7 +54,7 @@ type listResponse struct {
 //	newHandler canonicalizes root (Abs + EvalSymlinks) and wires the routes:
 //
 //	GET /api/list, GET /api/file, GET /api/raw/{path...}, GET /api/download,
-//	GET /api/ws (fuzzy find)
+//	GET /api/ws (fuzzy find), GET /api/stream (on-demand streaming, .gz transparent)
 //	GET /{$} -> index, GET / -> SPA fallback
 //
 // The embedded frontend is served in dev mode too, so the server is fully
@@ -90,6 +90,7 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	mux.Handle("GET /api/raw/{path...}", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleRaw))))
 	mux.Handle("GET /api/download", allowNullOrigin(http.HandlerFunc(s.handleDownload)))
 	mux.Handle("GET /api/ws", allowNullOrigin(http.HandlerFunc(s.handleWS)))
+	mux.Handle("GET /api/stream", allowNullOrigin(http.HandlerFunc(s.handleStream)))
 	// preflight for null-origin CORS requests: the GET routes above do not
 	// match OPTIONS, so answer them here without reaching a handler
 	mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {
@@ -239,13 +240,19 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !st.IsDir() {
+			name := st.Name()
+			size := st.Size()
+			mime := sniffMime(loc.hostPath)
+			// .gz 对前端透明:内层 MIME + 解压后大小,前端按内层类型分派。
+			if isGzPath(loc.hostPath) {
+				if gm, gs, ok := gzInfo(loc.hostPath); ok {
+					mime, size = gm, gs
+				}
+			}
 			writeJSON(w, http.StatusOK, listResponse{
 				Path:  cp,
 				IsDir: false,
-				File: &fileEntry{
-					Name: st.Name(), Size: st.Size(), ModTime: st.ModTime(), IsDir: false,
-					Mime: sniffMime(loc.hostPath),
-				},
+				File: &fileEntry{Name: name, Size: size, ModTime: st.ModTime(), IsDir: false, Mime: mime},
 			})
 			return
 		}
@@ -384,6 +391,11 @@ func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 	}
 	if st.IsDir() {
 		writeErr(w, http.StatusBadRequest, "is a directory")
+		return
+	}
+	// .gz 文件透明解压后返回(小文件全文 fetch);普通文件走 ServeContent。
+	if isGzPath(loc.hostPath) {
+		serveGz(w, r, f, st)
 		return
 	}
 	// ServeContent handles Content-Type, Range/206 (video seeking) and

@@ -11,6 +11,7 @@
   import MarkdownViewer from './MarkdownViewer.svelte'
   import HtmlViewer from './HtmlViewer.svelte'
   import JsonlViewer from './JsonlViewer.svelte'
+  import StreamViewer from './StreamViewer.svelte'
   import DownloadViewer from './DownloadViewer.svelte'
   import { listDir, LIST_CHUNK } from './api.js'
   import { downloadUrl } from './api.js'
@@ -30,6 +31,13 @@
   // when load() resolves path to a file, path IS the file's full path
   let filePath = $derived(selected ? path : '')
   let view = $derived(selected ? viewerFor(selected.name, selected.mime) : '')
+  // 大文本文件统一走流式查看器:普通文件与 .gz 一视同仁(解压在服务端)。
+  const STREAM_THRESHOLD = 5 * 1024 * 1024
+  let streamable = $derived(
+    selected &&
+      (view === 'code' || view === 'markdown' || view === 'jsonl') &&
+      selected.size > STREAM_THRESHOLD
+  )
 
   function navigate(p) {
     if (!p || p === '/') {
@@ -165,7 +173,9 @@
         <button class="btn" onclick={load}>重试</button>
       </div>
     {:else if selected}
-      {#if view === 'image'}
+      {#if streamable}
+        <StreamViewer path={filePath} name={selected.name} />
+      {:else if view === 'image'}
         <ImageViewer path={filePath} />
       {:else if view === 'video'}
         <VideoViewer path={filePath} />

@@ -393,6 +393,49 @@
   .jsonl-detail-toolbar {
     @apply flex flex-none items-center justify-between gap-2 border-b border-edge bg-panel px-3 py-2;
   }
+  /* ---- 流式查看器(虚拟滚动,固定行高 20px) ---- */
+  .stream-scroll {
+    @apply min-h-0 flex-1 overflow-auto bg-bg;
+  }
+  .stream-line {
+    display: flex;
+    height: 20px;
+    cursor: pointer;
+  }
+  .stream-line:hover .stream-gutter,
+  .stream-line:hover .stream-code {
+    background: var(--vt-hover);
+  }
+  .stream-line.selected .stream-gutter,
+  .stream-line.selected .stream-code {
+    background: var(--vt-selection);
+  }
+  .stream-gutter {
+    position: sticky;
+    left: 0;
+    flex: none;
+    box-sizing: content-box;
+    padding-right: 10px;
+    border-right: 1px solid var(--vt-edge);
+    background: var(--vt-bg);
+    color: var(--vt-muted);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 20px;
+    text-align: right;
+    user-select: none;
+  }
+  .stream-code {
+    flex: none;
+    padding: 0 16px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 20px;
+    white-space: pre;
+  }
+  .stream-stat {
+    @apply flex-none whitespace-nowrap text-xs text-muted;
+  }
 }
 
 /* ---- 代码高亮(自绘主题,颜色由 --hl-* 变量驱动,随深浅主题切换) ---- */

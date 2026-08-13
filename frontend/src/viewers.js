@@ -227,7 +227,9 @@ export async function copyText(text) {
 }
 
 export function viewerFor(name, mime) {
-  const lower = name.toLowerCase()
+  // .gz 对前端透明:内层类型由剥掉 .gz 后的名字与服务器嗅探的内层 MIME
+  // 决定(解压已在服务端完成)。前端不区分压缩与否。
+  const lower = name.toLowerCase().replace(/\.gz$/, '')
   const ext = extension(lower)
   const mt = (mime || '').split(';')[0].trim().toLowerCase()
 
