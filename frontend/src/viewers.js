@@ -1,17 +1,9 @@
 import hljs from 'highlight.js'
-import cmake from 'highlight.js/lib/languages/cmake'
-import gradle from 'highlight.js/lib/languages/gradle'
-import groovy from 'highlight.js/lib/languages/groovy'
-import powershell from 'highlight.js/lib/languages/powershell'
-import protobuf from 'highlight.js/lib/languages/protobuf'
-import scala from 'highlight.js/lib/languages/scala'
+import postscript from './postscript.js'
 
-hljs.registerLanguage('cmake', cmake)
-hljs.registerLanguage('gradle', gradle)
-hljs.registerLanguage('groovy', groovy)
-hljs.registerLanguage('powershell', powershell)
-hljs.registerLanguage('protobuf', protobuf)
-hljs.registerLanguage('scala', scala)
+// `highlight.js` is imported as the full bundle, which registers every
+// bundled language; postscript is the only grammar supplied by this project.
+hljs.registerLanguage('postscript', postscript)
 
 // Browsers can actually render these. HEIC/HEIF/TIFF deliberately excluded:
 // Chrome does not decode them in <img>, a broken image is worse than download.
@@ -19,78 +11,126 @@ export const IMAGE = ['png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'svg', 'bmp',
 export const VIDEO = ['mp4', 'webm', 'ogv', 'mov', 'm4v']
 export const AUDIO = ['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus', 'weba']
 export const PDF = ['pdf']
-// Both extensions (txt, log, ...) and full names (go.sum, LICENSE, ...)
+// Both extensions (txt, log, ...) and full names (license, dockerignore, ...)
 export const TEXT = [
-  'txt', 'log', 'csv', 'tsv', 'env', 'gitignore', 'gitattributes', 'editorconfig',
-  'properties', 'gradle', 'bat', 'cmd', 'text',
-  'go.sum', 'go.work', 'cargo.lock', 'procfile', 'dockerignore',
+  'txt', 'log', 'csv', 'tsv', 'text',
+  'gitignore', 'gitattributes', 'editorconfig', 'procfile', 'dockerignore',
   'license', 'licence', 'readme', 'changelog', 'copying', 'notice', 'authors', 'todo'
 ]
 
-// Full filename first, then extension. Values are validated against hljs below.
+// Full filename first, then extension. Values are hljs language names; the
+// full bundle registers every one of them, so none silently degrades to
+// plaintext (codeLanguage() still guards against a stale name).
 const CODE_LANG = {
+  // systems / compiled
   go: 'go',
-  ts: 'typescript',
-  tsx: 'typescript', // no dedicated tsx grammar in hljs 11
-  mts: 'typescript', // ESM TypeScript (.d.mts, .mts)
-  cts: 'typescript', // CommonJS TypeScript
-  js: 'javascript',
-  jsx: 'javascript', // no dedicated jsx grammar in hljs 11
-  mjs: 'javascript',
-  cjs: 'javascript',
-  py: 'python',
-  rb: 'ruby',
   rs: 'rust',
-  c: 'c',
-  h: 'c',
-  cc: 'cpp',
-  cpp: 'cpp',
-  cxx: 'cpp',
-  hpp: 'cpp',
+  c: 'c', h: 'c',
+  cc: 'cpp', cpp: 'cpp', cxx: 'cpp', 'c++': 'cpp', hpp: 'cpp', hh: 'cpp', hxx: 'cpp', 'h++': 'cpp',
   cs: 'csharp',
   java: 'java',
-  kt: 'kotlin',
+  kt: 'kotlin', kts: 'kotlin',
   swift: 'swift',
-  php: 'php',
-  sh: 'bash',
-  bash: 'bash',
-  zsh: 'bash',
-  yaml: 'yaml',
-  yml: 'yaml',
-  json: 'json',
-  jsonc: 'json',
-  map: 'json', // source maps (.map) are JSON
-  ipynb: 'json', // Jupyter notebooks are JSON
-  toml: 'ini', // no toml grammar in hljs 11; ini covers [section]/key=value
-  xml: 'xml',
-  html: 'xml',
-  htm: 'xml',
-  css: 'css',
-  scss: 'scss',
-  less: 'less',
-  sql: 'sql',
-  md: 'markdown',
-  dockerfile: 'dockerfile',
-  makefile: 'makefile',
-  ini: 'ini',
-  conf: 'ini',
-  cfg: 'ini',
-  diff: 'diff',
-  patch: 'diff',
+  d: 'd',
+  nim: 'nim',
+  cr: 'crystal',
+  m: 'objectivec', mm: 'objectivec', // .m is Objective-C (the common convention)
+  pas: 'delphi', dpr: 'delphi', dpk: 'delphi',
+  pp: 'puppet', // Puppet manifest, not Pascal (that's .pas)
+  bas: 'basic',
+  ada: 'ada', adb: 'ada', ads: 'ada',
+  vala: 'vala',
+  hx: 'haxe',
+  f: 'fortran', f90: 'fortran', f95: 'fortran', f03: 'fortran', for: 'fortran',
+  vb: 'vbnet',
+  vbs: 'vbscript',
+  fs: 'fsharp', fsx: 'fsharp', fsi: 'fsharp',
+  ml: 'ocaml', mli: 'ocaml',
+  sml: 'sml',
+  hs: 'haskell', lhs: 'haskell',
+  erl: 'erlang', hrl: 'erlang',
+  ex: 'elixir', exs: 'elixir',
+  clj: 'clojure', cljs: 'clojure', cljc: 'clojure', edn: 'clojure',
+  scm: 'scheme', ss: 'scheme', rkt: 'scheme',
+  lisp: 'lisp', lsp: 'lisp', el: 'lisp',
+  pro: 'prolog',
+  // scripting
+  js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+  ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
+  py: 'python', pyw: 'python', pyi: 'python', pyx: 'python', pxd: 'python',
+  rb: 'ruby', rake: 'ruby', gemspec: 'ruby', ru: 'ruby',
+  php: 'php', php3: 'php', php4: 'php', php5: 'php', phtml: 'php',
+  pl: 'perl', pm: 'perl', pod: 'perl', t: 'perl',
   lua: 'lua',
-  perl: 'perl',
   r: 'r',
-  scala: 'scala',
+  scala: 'scala', sc: 'scala',
   groovy: 'groovy',
-  gradle: 'gradle',
-  ps1: 'powershell',
+  dart: 'dart',
+  elm: 'elm',
+  coffee: 'coffeescript',
+  ls: 'livescript',
+  moon: 'moonscript',
+  ps1: 'powershell', psm1: 'powershell', psd1: 'powershell',
+  bat: 'dos', cmd: 'dos',
+  sh: 'bash', bash: 'bash', zsh: 'bash', ksh: 'bash', fish: 'shell',
+  awk: 'awk',
+  tcl: 'tcl',
+  // markup / stylesheets
+  html: 'xml', htm: 'xml', xhtml: 'xml',
+  xml: 'xml', xsd: 'xml', xsl: 'xml', xslt: 'xml', svg: 'xml', rss: 'xml', atom: 'xml', plist: 'xml', pom: 'xml', wsdl: 'xml',
+  css: 'css',
+  scss: 'scss', sass: 'scss',
+  less: 'less',
+  styl: 'stylus', stylus: 'stylus',
+  vue: 'xml', svelte: 'xml', // no vue/svelte grammar; xml covers the template
+  twig: 'twig',
+  hbs: 'handlebars', handlebars: 'handlebars', mustache: 'handlebars',
+  haml: 'haml',
+  erb: 'erb', rhtml: 'erb',
+  md: 'markdown', markdown: 'markdown', mdx: 'markdown',
+  adoc: 'asciidoc', asciidoc: 'asciidoc',
+  tex: 'latex', latex: 'latex',
+  // data / config
+  json: 'json', jsonc: 'json', map: 'json', ipynb: 'json', geojson: 'json',
+  yaml: 'yaml', yml: 'yaml',
+  ini: 'ini', conf: 'ini', cfg: 'ini', env: 'ini',
+  toml: 'ini', // no toml grammar in hljs; ini covers [section]/key=value
+  properties: 'properties',
+  sql: 'sql',
+  pgsql: 'pgsql',
+  graphql: 'graphql', gql: 'graphql',
   proto: 'protobuf',
-  graphql: 'graphql',
-  vue: 'xml',
-  svelte: 'xml',
+  thrift: 'thrift',
+  capnp: 'capnproto',
+  nix: 'nix',
+  dockerfile: 'dockerfile',
+  makefile: 'makefile', mk: 'makefile', mak: 'makefile',
+  cmake: 'cmake',
+  gradle: 'gradle',
+  vim: 'vim',
+  ldif: 'ldif',
+  diff: 'diff', patch: 'diff',
+  http: 'http',
+  ps: 'postscript', eps: 'postscript',
+  // graphics / hardware / scientific
+  glsl: 'glsl', vert: 'glsl', frag: 'glsl', geom: 'glsl', comp: 'glsl',
+  jl: 'julia',
+  v: 'verilog', vh: 'verilog', sv: 'verilog', svh: 'verilog',
+  vhd: 'vhdl', vhdl: 'vhdl',
+  asm: 'x86asm', s: 'x86asm',
+  ll: 'llvm',
+  wat: 'wasm',
+  gcode: 'gcode',
+  ino: 'arduino',
+  pde: 'processing',
+  as: 'actionscript',
+  ahk: 'autohotkey',
+  au3: 'autoit',
+  applescript: 'applescript', scpt: 'applescript',
   // dotted / extension-less well-known names
   'go.mod': 'plaintext',
   'go.sum': 'plaintext',
+  'go.work': 'plaintext',
   'cargo.lock': 'ini',
   '.gitmodules': 'ini',
   '.npmrc': 'ini',
@@ -100,6 +140,11 @@ const CODE_LANG = {
   '.bash_aliases': 'bash',
   '.profile': 'bash',
   '.zshrc': 'bash',
+  '.vimrc': 'vim',
+  'nginx.conf': 'nginx',
+  '.htaccess': 'apache',
+  'httpd.conf': 'apache',
+  'apache2.conf': 'apache',
   gemfile: 'ruby',
   rakefile: 'ruby',
   vagrantfile: 'ruby',
@@ -114,8 +159,9 @@ export function extension(name) {
 
 // Returns an hljs language name, or 'plaintext' when the mapping resolves but
 // the language is not bundled, or null when the file is not code at all.
+// .gz is transparent app-wide, so it is stripped before the lookup.
 export function codeLanguage(name) {
-  const lower = name.toLowerCase()
+  const lower = name.toLowerCase().replace(/\.gz$/, '')
   const lang = CODE_LANG[lower] || CODE_LANG[extension(lower)]
   if (!lang) return null
   return hljs.getLanguage(lang) ? lang : 'plaintext'
@@ -155,6 +201,35 @@ const LANG_LABELS = {
   powershell: 'PowerShell',
   protobuf: 'Protobuf',
   graphql: 'GraphQL',
+  postscript: 'PostScript',
+  objectivec: 'Objective-C',
+  fsharp: 'F#',
+  vbnet: 'VB.NET',
+  vbscript: 'VBScript',
+  x86asm: 'Assembly',
+  autohotkey: 'AutoHotkey',
+  autoit: 'AutoIt',
+  applescript: 'AppleScript',
+  actionscript: 'ActionScript',
+  coffeescript: 'CoffeeScript',
+  livescript: 'LiveScript',
+  moonscript: 'MoonScript',
+  ocaml: 'OCaml',
+  sml: 'SML',
+  matlab: 'MATLAB',
+  latex: 'LaTeX',
+  erb: 'ERB',
+  dos: 'Batch',
+  asciidoc: 'AsciiDoc',
+  pgsql: 'PostgreSQL',
+  http: 'HTTP',
+  vhdl: 'VHDL',
+  glsl: 'GLSL',
+  gcode: 'G-code',
+  llvm: 'LLVM',
+  wasm: 'WebAssembly',
+  ldif: 'LDIF',
+  purebasic: 'PureBasic',
   plaintext: 'TEXT'
 }
 
@@ -171,7 +246,8 @@ const MIME_LANG = {
   'text/html': 'xml',
   'text/css': 'css',
   'text/javascript': 'javascript',
-  'application/javascript': 'javascript'
+  'application/javascript': 'javascript',
+  'application/postscript': 'postscript'
 }
 
 export function languageFromMime(mime) {
@@ -187,12 +263,57 @@ const AUTO_LANGS = [
   'javascript', 'typescript', 'go', 'rust', 'java', 'c', 'cpp', 'csharp',
   'ruby', 'php', 'sql', 'css', 'scss', 'less', 'diff', 'dockerfile',
   'makefile', 'properties', 'gradle', 'groovy', 'kotlin', 'swift', 'lua',
-  'perl', 'r', 'scala', 'powershell', 'protobuf', 'cmake', 'graphql', 'plaintext'
+  'perl', 'r', 'scala', 'powershell', 'protobuf', 'cmake', 'graphql',
+  'dart', 'elixir', 'elm', 'haskell', 'clojure', 'erlang', 'ocaml',
+  'fsharp', 'objectivec', 'fortran', 'nim', 'crystal', 'd', 'verilog',
+  'vhdl', 'julia', 'matlab', 'latex', 'awk', 'tcl', 'delphi', 'prolog',
+  'scheme', 'lisp', 'coffeescript', 'postscript', 'plaintext'
 ]
 
 const MIN_AUTO_DETECT = 64 // shorter samples carry too little signal
 
+// Interpreter basename (version/extension suffixes stripped) -> hljs language.
+// A shebang is the strongest content signal: it names the interpreter.
+const SHEBANG_LANG = {
+  sh: 'bash', bash: 'bash', zsh: 'bash', ksh: 'bash', dash: 'bash', ash: 'bash', csh: 'bash', tcsh: 'bash',
+  fish: 'shell',
+  python: 'python',
+  perl: 'perl',
+  ruby: 'ruby',
+  php: 'php',
+  node: 'javascript', nodejs: 'javascript', bun: 'javascript',
+  deno: 'typescript',
+  lua: 'lua',
+  rscript: 'r',
+  awk: 'awk', gawk: 'awk', mawk: 'awk', nawk: 'awk',
+  tclsh: 'tcl', wish: 'tcl', expect: 'tcl',
+  escript: 'erlang',
+  groovy: 'groovy',
+  pwsh: 'powershell',
+  crystal: 'crystal',
+  elixir: 'elixir'
+}
+
+function languageFromShebang(text) {
+  const m = /^#!\s*(\S+)([^\r\n]*)/.exec(text.slice(0, 256))
+  if (!m) return null
+  let prog = m[1].split('/').pop().toLowerCase()
+  const rest = m[2].trim()
+  if (prog === 'env') {
+    // `#!/usr/bin/env python` (or `env -S python -u`): interpreter follows.
+    const args = rest.split(/\s+/)
+    let i = args[0] === '-S' || args[0] === '--split-string' ? 1 : 0
+    while (i < args.length && args[i].startsWith('-')) i++
+    prog = (args[i] || '').split('/').pop().toLowerCase()
+  }
+  prog = prog.replace(/\.exe$/i, '')
+  if (SHEBANG_LANG[prog]) return SHEBANG_LANG[prog]
+  return SHEBANG_LANG[prog.replace(/\d+(\.\d+)*$/, '')] || null // python3.11 -> python
+}
+
 export function detectLanguage(text) {
+  const shebang = languageFromShebang(text)
+  if (shebang) return shebang
   if (text.trim().length < MIN_AUTO_DETECT) return 'plaintext'
   const detected = hljs.highlightAuto(text.slice(0, 64 * 1024), AUTO_LANGS)
   return AUTO_LANGS.includes(detected.language) ? detected.language : 'plaintext'
@@ -247,6 +368,8 @@ export function viewerFor(name, mime) {
     if (ext === 'jsonl' || ext === 'jsonlines') return 'jsonl'
     return 'code'
   }
+  // PostScript is text the sniffer labels as application/postscript
+  if (mt === 'application/postscript') return 'code'
   // any other identified mime is binary non-media: the filename must not
   // override what the content says (a .json holding a zip is a zip)
   if (mt && mt !== 'application/octet-stream' && mt !== 'application/ogg') return 'download'
