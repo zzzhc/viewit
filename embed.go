@@ -4,5 +4,7 @@ import (
 	"embed"
 )
 
-//go:embed frontend/dist
+//go:generate go run embedgen.go
+
+//go:embed frontend/dist.gz
 var embedFS embed.FS

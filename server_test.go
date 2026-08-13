@@ -838,61 +838,130 @@ func TestDownloadFileVaryOnIdentity(t *testing.T) {
 	}
 }
 
+func gunzipBytes(t *testing.T, b []byte) []byte {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	out, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("gunzip: %v", err)
+	}
+	return out
+}
+
+func TestAcceptsGzip(t *testing.T) {
+	cases := []struct {
+		ae   string
+		want bool
+	}{
+		{"", false},
+		{"identity", false},
+		{"gzip", true},
+		{"gzip;q=0", false},
+		{"br", false},
+		{"br, gzip", true},
+		{"*", true},
+		{"br, *;q=0", false},   // 未提 gzip,通配拒绝 → 不接受
+		{"gzip;q=0, *", false}, // 显式 q=0 拒绝优先于通配
+		{"gzip;q=0.5", true},
+	}
+	for _, tc := range cases {
+		if got := acceptsGzip(tc.ae); got != tc.want {
+			t.Errorf("acceptsGzip(%q) = %v, want %v", tc.ae, got, tc.want)
+		}
+	}
+}
+
 func TestIndexCacheControl(t *testing.T) {
 	h, _ := newTestHandler(t, false)
-	want, err := fs.ReadFile(embedFS, "frontend/dist/index.html")
+	gz, err := fs.ReadFile(embedFS, "frontend/dist.gz/index.html.gz")
 	if err != nil {
-		t.Fatalf("read embedded index: %v", err)
+		t.Fatalf("read embedded gzipped index: %v", err)
 	}
+	want := gunzipBytes(t, gz)
 
-	// HTML 入口必须回源校验
-	rr := doGet(t, h, "/")
+	// 接受 gzip:原样下发预压缩字节
+	rr := doGetAE(t, h, "/", "gzip")
 	assertStatus(t, rr, http.StatusOK)
 	if cc := rr.Header().Get("Cache-Control"); cc != "no-cache" {
 		t.Fatalf("Cache-Control = %q, want no-cache", cc)
 	}
+	if rr.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", rr.Header().Get("Content-Encoding"))
+	}
+	if rr.Header().Get("Content-Length") != strconv.Itoa(len(gz)) {
+		t.Fatalf("Content-Length = %q, want %d (pre-gzipped)", rr.Header().Get("Content-Length"), len(gz))
+	}
+	if !bytes.Equal(rr.Body.Bytes(), gz) {
+		t.Fatalf("index body = %d bytes, want %d pre-gzipped bytes", rr.Body.Len(), len(gz))
+	}
 
-	// 客户端接受 br 时以 br 压缩传输
-	rr = doGetAE(t, h, "/", "gzip, br")
+	// 未声明 Accept-Encoding:解压后以 identity 下发原文(禁 gzip 的客户端可用)
+	rr = doGet(t, h, "/")
 	assertStatus(t, rr, http.StatusOK)
-	if rr.Header().Get("Content-Encoding") != "br" {
-		t.Fatalf("Content-Encoding = %q, want br", rr.Header().Get("Content-Encoding"))
+	if rr.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("Content-Encoding = %q, want none (identity)", rr.Header().Get("Content-Encoding"))
 	}
-	if rr.Header().Get("Content-Length") != "" {
-		t.Fatalf("Content-Length = %q, want absent on encoded response", rr.Header().Get("Content-Length"))
+	if !bytes.Equal(rr.Body.Bytes(), want) {
+		t.Fatalf("identity index body mismatch: got %d bytes, want %d", rr.Body.Len(), len(want))
 	}
-	got, err := io.ReadAll(brotli.NewReader(rr.Body))
-	if err != nil {
-		t.Fatalf("brotli decompress: %v", err)
+
+	// 显式拒绝 gzip:同样解压后下发原文
+	rr = doGetAE(t, h, "/", "gzip;q=0")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("Content-Encoding = %q, want none (gzip refused)", rr.Header().Get("Content-Encoding"))
 	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("decompressed index mismatch: got %d bytes, want %d", len(got), len(want))
+	if !bytes.Equal(rr.Body.Bytes(), want) {
+		t.Fatalf("refused-gzip index body mismatch: got %d bytes, want %d", rr.Body.Len(), len(want))
 	}
 }
 
 func TestAssetCacheControl(t *testing.T) {
 	h, _ := newTestHandler(t, false)
-	assets, err := fs.Glob(embedFS, "frontend/dist/assets/*.js")
+	assets, err := fs.Glob(embedFS, "frontend/dist.gz/assets/*.js.gz")
 	if err != nil || len(assets) == 0 {
-		t.Fatalf("no embedded js assets: %v", err)
+		t.Fatalf("no embedded gzipped js assets: %v", err)
 	}
-	asset := strings.TrimPrefix(assets[0], "frontend/dist/")
-	want, err := fs.ReadFile(embedFS, assets[0])
+	asset := strings.TrimSuffix(strings.TrimPrefix(assets[0], "frontend/dist.gz/"), ".gz")
+	gz, err := fs.ReadFile(embedFS, assets[0])
 	if err != nil {
 		t.Fatalf("read %s: %v", assets[0], err)
 	}
+	want := gunzipBytes(t, gz)
 
-	// 哈希资源:不可变长缓存
-	rr := doGet(t, h, "/"+asset)
+	// 接受 gzip:哈希资源不可变缓存,预 gzip 字节原样下发
+	rr := doGetAE(t, h, "/"+asset, "gzip")
 	assertStatus(t, rr, http.StatusOK)
 	if cc := rr.Header().Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
 		t.Fatalf("Cache-Control = %q, want immutable", cc)
 	}
-	if !bytes.Equal(rr.Body.Bytes(), want) {
-		t.Fatalf("asset body mismatch: got %d bytes, want %d", rr.Body.Len(), len(want))
+	if rr.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", rr.Header().Get("Content-Encoding"))
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Fatalf("Content-Type = %q, want a javascript MIME", ct)
+	}
+	if rr.Header().Get("Content-Length") != strconv.Itoa(len(gz)) {
+		t.Fatalf("Content-Length = %q, want %d", rr.Header().Get("Content-Length"), len(gz))
+	}
+	if !bytes.Equal(rr.Body.Bytes(), gz) {
+		t.Fatalf("asset body = %d bytes, want %d pre-gzipped bytes", rr.Body.Len(), len(gz))
 	}
 
-	// 接受 br 时压缩传输,内容可解回原文
+	// 未声明 Accept-Encoding:解压后以 identity 下发原文
+	rr = doGet(t, h, "/"+asset)
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("Content-Encoding = %q, want none (identity)", rr.Header().Get("Content-Encoding"))
+	}
+	if !bytes.Equal(rr.Body.Bytes(), want) {
+		t.Fatalf("identity asset body mismatch: got %d bytes, want %d", rr.Body.Len(), len(want))
+	}
+
+	// 客户端只接受 br:中间件把解压后的原文再压成 br
 	rr = doGetAE(t, h, "/"+asset, "br")
 	assertStatus(t, rr, http.StatusOK)
 	if rr.Header().Get("Content-Encoding") != "br" {
@@ -906,6 +975,6 @@ func TestAssetCacheControl(t *testing.T) {
 		t.Fatalf("brotli decompress: %v", err)
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatalf("decompressed asset mismatch: got %d bytes, want %d", len(got), len(want))
+		t.Fatalf("brotli asset mismatch: got %d bytes, want %d", len(got), len(want))
 	}
 }

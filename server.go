@@ -29,8 +29,8 @@ var errOutsideRoot = errors.New("path outside root")
 
 type server struct {
 	root     string         // canonicalized, symlink-free root directory
-	dist     fs.FS          // embedded frontend/dist
-	index    []byte         // index.html served for SPA routes
+	dist     fs.FS          // embedded frontend/dist.gz (pre-gzipped assets)
+	index    []byte         // gzipped index.html, served for index/SPA routes
 	idx      *findIndex     // fuzzy-find index, built lazily on first WS connection
 	tarStore *tarIndexStore // resident tar indexes, keyed by host path
 }
@@ -71,12 +71,12 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	}
 	s := &server{root: resolved, idx: &findIndex{}, tarStore: newTarIndexStore()}
 
-	dist, err := fs.Sub(embedFS, "frontend/dist")
+	dist, err := fs.Sub(embedFS, "frontend/dist.gz")
 	if err != nil {
 		return nil, err
 	}
 	s.dist = dist
-	index, err := fs.ReadFile(dist, "index.html")
+	index, err := fs.ReadFile(dist, "index.html.gz")
 	if err != nil {
 		return nil, err
 	}
@@ -751,13 +751,10 @@ func compressible(mt string) bool {
 	return false
 }
 
-// preferredEncoding returns the best content-coding the client accepts per
-// Accept-Encoding (RFC 9110 §12.5.3): the acceptable coding with the highest
-// q-value wins; ties go to brotli, which yields the better compression ratio
-// than gzip; "" means identity. An explicit q=0 refusal beats a "*"
-// wildcard for that coding.
-func preferredEncoding(ae string) string {
-	br, gz, star := -1.0, -1.0, -1.0
+// parseAcceptEncoding 解析 Accept-Encoding,返回 br/gzip/"*" 三者的 q 值
+// (-1 = 未提及),供 preferredEncoding 与 acceptsGzip 共用。
+func parseAcceptEncoding(ae string) (br, gz, star float64) {
+	br, gz, star = -1.0, -1.0, -1.0
 	for _, part := range strings.Split(ae, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -779,6 +776,16 @@ func preferredEncoding(ae string) string {
 			star = q
 		}
 	}
+	return
+}
+
+// preferredEncoding returns the best content-coding the client accepts per
+// Accept-Encoding (RFC 9110 §12.5.3): the acceptable coding with the highest
+// q-value wins; ties go to brotli, which yields the better compression ratio
+// than gzip; "" means identity. An explicit q=0 refusal beats a "*"
+// wildcard for that coding.
+func preferredEncoding(ae string) string {
+	br, gz, star := parseAcceptEncoding(ae)
 	// acceptable: explicitly listed with q>0, or covered by "*" with q>0
 	acceptable := func(q, star float64) bool {
 		if q >= 0 {
@@ -802,6 +809,17 @@ func preferredEncoding(ae string) string {
 		return "gzip" // the client prefers gzip explicitly
 	}
 	return "br"
+}
+
+// acceptsGzip 报告客户端 Accept-Encoding 是否接受 gzip(显式列出 q>0,或由
+// "*" 通配覆盖;显式 q=0 拒绝优先)。预 gzip 资源据此决定直出压缩字节还是
+// 解压后以 identity 发送。
+func acceptsGzip(ae string) bool {
+	_, gz, star := parseAcceptEncoding(ae)
+	if gz >= 0 {
+		return gz > 0
+	}
+	return star > 0
 }
 
 // parseQ parses a "q=0.8" quality value (default 1 when absent).
@@ -909,21 +927,68 @@ func (e *encodingWriter) Close() {
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// index.html 引用内容哈希资源,必须每次回源校验,缓存 no-cache
 	w.Header().Set("Cache-Control", "no-cache")
-	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(s.index))
+	s.serveIndexBody(w, r)
 }
 
 func (s *server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/")
 	if _, err := fs.Stat(s.dist, name); err == nil {
-		// Vite 构建产物文件名带内容哈希,可长期缓存
+		// 非可压缩资源(字体/图片)原样直出,Vite 内容哈希名可长期缓存
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		http.FileServerFS(s.dist).ServeHTTP(w, r)
 		return
 	}
+	if f, err := s.dist.Open(name + ".gz"); err == nil {
+		// 预 gzip 资源(JS/CSS/HTML 等):按客户端接受度直出或解压
+		if st, serr := f.Stat(); serr == nil {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			servePreGz(w, r, f, int(st.Size()), assetContentType(name))
+			f.Close()
+			return
+		}
+		f.Close()
+	}
+	// SPA 回退:任意路径都返回 index.html
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	s.serveIndexBody(w, r)
+}
+
+// serveIndexBody 下发预 gzip 的 index.html(按客户端接受度直出或解压)。
+func (s *server) serveIndexBody(w http.ResponseWriter, r *http.Request) {
+	servePreGz(w, r, bytes.NewReader(s.index), len(s.index), "text/html; charset=utf-8")
+}
+
+// servePreGz 下发一份预 gzip 内容(gz 为压缩字节流,gzLen 为其长度,
+// contentType 为内层 MIME)。客户端接受 gzip 时原样直出压缩字节
+// (Content-Encoding: gzip,零运行时压缩);否则解压后以 identity 发送——此时
+// withFrontendEncoding 中间件会按 Accept-Encoding 决定是否再压缩成 br。
+// 两类响应均经中间件补 Vary。
+func servePreGz(w http.ResponseWriter, r *http.Request, gz io.Reader, gzLen int, contentType string) {
+	w.Header().Set("Content-Type", contentType)
+	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Length", strconv.Itoa(gzLen))
+		w.WriteHeader(http.StatusOK)
+		io.Copy(w, gz)
+		return
+	}
+	zr, err := gzip.NewReader(gz)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer zr.Close()
 	w.WriteHeader(http.StatusOK)
-	w.Write(s.index)
+	io.Copy(w, zr)
+}
+
+// assetContentType 返回预 gzip 资源的内层 MIME,取原始文件名扩展名(而非
+// .gz 后缀),与 http.FileServerFS 对同名原始文件的判定一致。
+func assetContentType(name string) string {
+	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
+		return ct
+	}
+	return "application/octet-stream"
 }
 
 // sniffMime reads the head of the file and returns a content-based MIME type

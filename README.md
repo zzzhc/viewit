@@ -53,8 +53,14 @@ Vite 的 `/api` 代理默认指向 `:8080`,后端端口不同时用环境变量�
 ## 前端构建
 
 ```bash
-cd frontend && npm install && npm run build   # 输出到 frontend/dist,下次 go build 时嵌入
+cd frontend && npm install && npm run build   # 输出到 frontend/dist
+go generate .                                 # 预 gzip 成 frontend/dist.gz(BestCompression)
+go build -o viewit .                          # 嵌入压缩后的 frontend/dist.gz
 ```
+
+`frontend/dist` 里的可压缩资源(JS/CSS/HTML/SVG/JSON 等)在嵌入前被 gzip 成
+`<name>.gz`,已压缩格式(字体、图片)原样保留;运行时直接以 `Content-Encoding:
+gzip` 原样下发压缩字节,不再运行时压缩,二进制更小且不耗请求期 CPU。
 
 ## 测试
 
@@ -78,5 +84,5 @@ go vet ./... && go test ./...
 
 ## HTTP 细节
 
-- **内容编码协商**:响应按 `Accept-Encoding`(含 q 值)选择编码,平局时优先压缩比更好的 brotli(`br`),其次 gzip。单文件下载与前端静态资源均支持;已压缩格式(图片、视频、压缩包)原样传输。可压缩响应一律带 `Vary: Accept-Encoding` 供缓存区分。
+- **内容编码协商**:API 与文件下载按 `Accept-Encoding`(含 q 值)选择编码,平局时优先压缩比更好的 brotli(`br`),其次 gzip;已压缩格式(图片、视频、压缩包)原样传输。可压缩响应一律带 `Vary: Accept-Encoding` 供缓存区分。前端静态资源在构建期已 gzip,固定以 `Content-Encoding: gzip` 下发(不参与 br 协商)。
 - **缓存策略**:`assets/` 下 Vite 内容哈希资源 `public, max-age=31536000, immutable`;`index.html` 与 SPA 回退 `no-cache`;API 响应 `no-store`。

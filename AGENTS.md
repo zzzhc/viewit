@@ -10,7 +10,7 @@
 
 ## Project Overview
 
-Go 静态文件浏览器:单二进制(`go:embed frontend/dist`)内置 Svelte 5 前端,依赖 `sahilm/fuzzy`(模糊匹配)与 `gorilla/websocket`(查找通道)。浏览器直接预览文件,无需下载。
+Go 静态文件浏览器:单二进制(`go:embed frontend/dist.gz`,可压缩资源构建期 gzip 后嵌入)内置 Svelte 5 前端,依赖 `sahilm/fuzzy`(模糊匹配)与 `gorilla/websocket`(查找通道)。浏览器直接预览文件,无需下载。
 
 ## Architecture & Data Flow
 
@@ -26,10 +26,11 @@ README.md 已有完整命令(构建/运行/dev/测试),此处只列易错点:
 
 ```bash
 cd frontend && npm install && npm run build   # 必须先于 go build
+go generate .                                 # 生成 frontend/dist.gz(预 gzip)
 go vet ./... && go test ./...
 ```
 
-**陷阱**: 克隆后不先 `cd frontend && npm run build` 则 `go:embed` 编译失败。
+**陷阱**: 克隆后不先 `cd frontend && npm run build && go generate .` 则 `go:embed`(嵌 `frontend/dist.gz`)编译失败。`embedgen.go` 带 `//go:build ignore` 标签,不参与构建,仅由 `go generate` 调用。
 
 ## Code Conventions & Common Patterns
 
