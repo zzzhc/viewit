@@ -155,12 +155,29 @@ func (s *server) contains(p string) bool {
 }
 
 // location is the result of resolveVirtual: either a real filesystem path
-// (archive == false) or a member path inside a zip/tar file treated as a
-// directory (archive == true, inside is the slash path within it).
+// (chain empty) or an already-opened chain of zip/tar archives with the
+// member path inside the deepest one (inside, "" = that archive's root).
+// keys[i] is chain[i]'s source identifier — the host absolute path for the
+// outer archive, or "parentKey/memberPath" for nested ones (cache/log key);
+// members[i] is the member path used to open chain[i] inside chain[i-1]
+// (empty for the outer archive). The caller must close() the location.
 type location struct {
-	hostPath string // absolute path to the archive file (archive) or the real file/dir
-	archive  bool   // hostPath is a .zip/.tar treated as a directory
-	inside   string // member path inside the archive ("" = archive root)
+	hostPath string
+	keys     []string
+	members  []string
+	chain    []archive
+	inside   string
+}
+
+// inner 返回最深一层归档。
+func (l *location) inner() archive { return l.chain[len(l.chain)-1] }
+
+// close 逆序关闭归档链(内层先关:内层 zip 的底层可能是外层成员流)。
+func (l *location) close() {
+	for i := len(l.chain) - 1; i >= 0; i-- {
+		l.chain[i].close()
+	}
+	l.chain, l.keys, l.members = nil, nil, nil
 }
 
 // isArchivePath reports whether p names a zip or tar file by extension. The
@@ -175,10 +192,16 @@ func isArchivePath(p string) bool {
 	return false
 }
 
+// errNotReadableArchive 是打开 zip/tar 失败(坏归档,或嵌套段不是有效
+// 归档)时的哨兵错误,映射为 404 "not a readable archive"。
+var errNotReadableArchive = errors.New("not a readable archive")
+
 // resolveVirtual maps a root-relative path ("" or "/" meaning root) to a
 // location. Real path segments are resolved with the same containment rules
-// as before; the first segment that names a zip/tar file becomes the archive
-// boundary and the remaining segments address a member inside it.
+// as before; the first segment that names a zip/tar file becomes the outer
+// archive boundary and the remaining segments address members inside it —
+// recursively, so a zip/tar member naming a zip/tar file opens as the next
+// layer (arbitrary nesting depth).
 //
 // Defense in depth (per component):
 //  1. String level: ".." elements and absolute paths (other than "/") are
@@ -186,7 +209,16 @@ func isArchivePath(p string) bool {
 //  2. EvalSymlinks follows symlinks, so each component's final target is
 //     checked.
 //  3. The resolved target must equal root or live under root+"/".
-func (s *server) resolveVirtual(p string) (location, error) {
+//  4. Inside an archive there is no filesystem access at all: member paths
+//     are matched by name against the archive's own entries only.
+func (s *server) resolveVirtual(p string) (loc location, err error) {
+	// 出错时释放已打开的归档链。
+	defer func() {
+		if err != nil {
+			loc.close()
+		}
+	}()
+
 	if p == "" {
 		p = "/"
 	}
@@ -224,7 +256,28 @@ func (s *server) resolveVirtual(p string) (location, error) {
 			continue
 		}
 		if isArchivePath(resolved) {
-			return location{hostPath: resolved, archive: true, inside: strings.Join(segs[i+1:], "/")}, nil
+			f, err := os.Open(resolved)
+			if err != nil {
+				return location{}, err
+			}
+			a, err := s.openArchive(&archiveSource{
+				key:     resolved,
+				size:    st.Size(),
+				modTime: st.ModTime(),
+				ra:      f,
+				closer:  f,
+			})
+			if err != nil {
+				f.Close()
+				return location{}, errNotReadableArchive
+			}
+			loc.hostPath = resolved
+			loc.keys = []string{resolved}
+			loc.chain = []archive{a}
+			if err := s.resolveArchivePath(&loc, segs[i+1:]); err != nil {
+				return location{}, err
+			}
+			return loc, nil
 		}
 		if i+1 < len(segs) {
 			// a non-archive file cannot be a directory in the path
@@ -233,6 +286,59 @@ func (s *server) resolveVirtual(p string) (location, error) {
 		return location{hostPath: resolved}, nil
 	}
 	return location{hostPath: host}, nil
+}
+
+// resolveArchivePath 在已打开的归档链上消费剩余路径段:某段命中 zip/tar
+// 成员就把该成员打开为下一层归档(支持任意深度嵌套),其余段留作最终
+// inside。成员按扩展名判定,与宿主文件的意图信号一致;成员名只与归档
+// 自身条目匹配,不做任何文件系统访问。
+func (s *server) resolveArchivePath(loc *location, segs []string) error {
+	inside := ""
+	for _, seg := range segs {
+		if seg == "" {
+			continue
+		}
+		next := seg
+		if inside != "" {
+			next = inside + "/" + seg
+		}
+		cur := loc.chain[len(loc.chain)-1]
+		if isArchivePath(seg) {
+			if e, ok := cur.stat(next); ok {
+				rc, err := cur.open(next)
+				if err != nil {
+					return err
+				}
+				// 所有成员读取器(内存 bytes.Reader、磁盘缓存文件、tar
+				// 的 SectionReader)都实现 ReaderAt;断言保证类型安全。
+				rar, ok := rc.(io.ReaderAt)
+				if !ok {
+					rc.Close()
+					return fmt.Errorf("member not random-accessible: %s", next)
+				}
+				key := loc.keys[len(loc.keys)-1] + "/" + next
+				a, err := s.openArchive(&archiveSource{
+					key:     key,
+					size:    e.Size,
+					modTime: e.ModTime,
+					ra:      rar,
+					closer:  rc,
+				})
+				if err != nil {
+					rc.Close()
+					return errNotReadableArchive
+				}
+				loc.chain = append(loc.chain, a)
+				loc.keys = append(loc.keys, key)
+				loc.members = append(loc.members, next)
+				inside = "" // 进入新一层,后续段在新层内解析
+				continue
+			}
+		}
+		inside = next
+	}
+	loc.inside = inside
+	return nil
 }
 
 // cleanURLPath returns the URL-style path (leading "/") for the response JSON.
@@ -251,9 +357,10 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 		mapResolveErr(w, err)
 		return
 	}
+	defer loc.close()
 	cp := cleanURLPath(r)
 
-	if !loc.archive {
+	if len(loc.chain) == 0 {
 		st, err := os.Stat(loc.hostPath)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -353,14 +460,9 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 归档内部路径:hostPath 是 zip/tar 文件,inside 是其中的成员路径。
-	a, err := s.openArchive(loc.hostPath)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not a readable archive")
-		return
-	}
-	defer a.close()
-
+	// 归档内部路径:chain 最内层是所在归档,inside 是其中的成员路径
+	// (可能为空 = 该归档根)。链已在 resolveVirtual 打开。
+	a := loc.inner()
 	if e, ok := a.stat(loc.inside); ok && !e.IsDir {
 		// 归档内单文件:嗅探成员内容定 MIME(与普通单文件分支一致)。
 		// 只读头部,绝不为了 MIME 解压整个成员(GB 级成员会解压到磁盘缓存)。
@@ -418,7 +520,8 @@ func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 		mapResolveErr(w, err)
 		return
 	}
-	if loc.archive {
+	defer loc.close()
+	if len(loc.chain) > 0 {
 		s.serveMember(w, r, loc, false)
 		return
 	}
@@ -459,7 +562,8 @@ func (s *server) handleRaw(w http.ResponseWriter, r *http.Request) {
 		mapResolveErr(w, err)
 		return
 	}
-	if loc.archive {
+	defer loc.close()
+	if len(loc.chain) > 0 {
 		s.serveMember(w, r, loc, true)
 		return
 	}
@@ -501,7 +605,8 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		mapResolveErr(w, err)
 		return
 	}
-	if loc.archive {
+	defer loc.close()
+	if len(loc.chain) > 0 {
 		s.downloadMember(w, r, loc)
 		return
 	}
@@ -523,12 +628,7 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 // (content sniffing cannot tell .js from .txt, and module scripts need a
 // JavaScript MIME type to run).
 func (s *server) serveMember(w http.ResponseWriter, r *http.Request, loc location, pinExt bool) {
-	a, err := s.openArchive(loc.hostPath)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not found")
-		return
-	}
-	defer a.close()
+	a := loc.inner()
 	if loc.inside == "" {
 		writeErr(w, http.StatusBadRequest, "is a directory")
 		return
@@ -556,11 +656,37 @@ func (s *server) serveMember(w http.ResponseWriter, r *http.Request, loc locatio
 	http.ServeContent(w, r, e.Name, e.ModTime, rc)
 }
 
-// downloadMember streams a download for a zip/tar path: the archive file
-// itself goes out verbatim (its own bytes, not a re-zip), a member is sent as
-// an attachment.
+// downloadMember streams a download for an archive path: the archive file
+// itself goes out verbatim (its own bytes, not a re-zip) for the outer
+// archive, a nested archive member goes out as its decompressed bytes (which
+// form a complete archive file), and a regular member is sent as an
+// attachment.
 func (s *server) downloadMember(w http.ResponseWriter, r *http.Request, loc location) {
-	if loc.inside == "" {
+	if loc.inside != "" {
+		a := loc.inner()
+		e, ok := a.stat(loc.inside)
+		if !ok {
+			writeErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		if e.IsDir {
+			writeErr(w, http.StatusBadRequest, "is a directory")
+			return
+		}
+		rc, err := a.open(loc.inside)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		defer rc.Close()
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": e.Name}))
+		w.Header().Set("Content-Length", strconv.FormatInt(e.Size, 10))
+		io.Copy(w, rc)
+		return
+	}
+	// inside 为空:下载"当前位置代表的那个归档文件"。
+	if len(loc.chain) == 1 {
+		// 最外层归档文件本身:原样下发。
 		st, err := os.Stat(loc.hostPath)
 		if err != nil {
 			writeErr(w, http.StatusNotFound, "not found")
@@ -569,28 +695,21 @@ func (s *server) downloadMember(w http.ResponseWriter, r *http.Request, loc loca
 		s.streamFile(w, r, loc.hostPath, st)
 		return
 	}
-	a, err := s.openArchive(loc.hostPath)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not found")
-		return
-	}
-	defer a.close()
-	e, ok := a.stat(loc.inside)
+	// 嵌套归档:下载父层中的该归档成员(解压后字节即完整归档文件)。
+	parent := loc.chain[len(loc.chain)-2]
+	member := loc.members[len(loc.members)-1]
+	e, ok := parent.stat(member)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	if e.IsDir {
-		writeErr(w, http.StatusBadRequest, "is a directory")
-		return
-	}
-	rc, err := a.open(loc.inside)
+	rc, err := parent.open(member)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	defer rc.Close()
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": e.Name}))
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(member)}))
 	w.Header().Set("Content-Length", strconv.FormatInt(e.Size, 10))
 	io.Copy(w, rc)
 }
@@ -1107,6 +1226,8 @@ func mapResolveErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errOutsideRoot):
 		writeErr(w, http.StatusBadRequest, "path outside root")
+	case errors.Is(err, errNotReadableArchive):
+		writeErr(w, http.StatusNotFound, "not a readable archive")
 	case os.IsNotExist(err):
 		writeErr(w, http.StatusNotFound, "not found")
 	default:

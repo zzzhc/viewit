@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -281,12 +282,20 @@ func TestCacheFileFor(t *testing.T) {
 	if home == "" {
 		t.Skip("no HOME")
 	}
+	// key 经 SHA-256 映射为固定长度文件名:嵌套归档的全路径(宿主路径 +
+	// 成员路径)可能超过 255 字节单组件限制,不能直接用作文件名。
 	got := cacheFileFor("/data/a.zip")
-	if !strings.HasSuffix(got, filepath.Join(".viewit", "_data_a.zip.txt")) {
-		t.Fatalf("cacheFileFor = %q, want suffix %q", got, filepath.Join(".viewit", "_data_a.zip.txt"))
+	if filepath.Dir(got) != filepath.Join(home, ".viewit") || filepath.Ext(got) != ".txt" {
+		t.Fatalf("cacheFileFor = %q, want a hashed name under ~/.viewit", got)
 	}
-	if strings.Contains(got, "/data/a.zip") {
-		t.Fatalf("cacheFileFor must replace '/' in the absolute path: %q", got)
+	if strings.Contains(got, "a.zip") {
+		t.Fatalf("cacheFileFor must not embed the key path: %q", got)
+	}
+	if cacheFileFor("/data/a.zip") != got {
+		t.Fatal("cacheFileFor must be deterministic for the same key")
+	}
+	if cacheFileFor("/data/b.zip") == got {
+		t.Fatal("cacheFileFor must differ for different keys")
 	}
 }
 
@@ -384,5 +393,263 @@ func TestTarIndexListBinarySearch(t *testing.T) {
 	}
 	if _, ok := ix.stat("url/BR/img/50000050150/a.jpg"); !ok {
 		t.Fatal("stat file a.jpg should be found")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 嵌套归档:zip/tar 内的 zip/tar 成员可继续递归浏览(任意深度)
+
+// zipBytes 把条目打包成内存中的 zip 字节(测试辅助)。
+func zipBytes(t *testing.T, entries map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range entries {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(w, content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// tarBytes 把条目打包成内存中的 tar 字节(测试辅助)。
+func tarBytes(t *testing.T, entries map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for name, content := range entries {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(tw, content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// 外层 zip 列表:zip/tar 成员是虚拟目录(isDir+isArchive,目录序在前)。
+func TestNestedZipListMarksArchiveMember(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	writeZipFile(t, filepath.Join(root, "outer.zip"), map[string]string{
+		"inner.zip": string(zipBytes(t, map[string]string{"n.txt": "n"})),
+		"a.tar":     string(tarBytes(t, map[string]string{"t.txt": "t"})),
+		"top.txt":   "top",
+	})
+
+	rr := doGet(t, h, "/api/list?path=outer.zip")
+	assertStatus(t, rr, http.StatusOK)
+	resp := decodeList(t, rr)
+	if !resp.IsDir {
+		t.Fatalf("outer.zip should be a dir")
+	}
+	byName := map[string]fileEntry{}
+	for _, e := range resp.Entries {
+		byName[e.Name] = e
+	}
+	for _, name := range []string{"inner.zip", "a.tar"} {
+		e := byName[name]
+		if !e.IsDir || !e.IsArchive || e.Size <= 0 {
+			t.Fatalf("%s = %+v, want virtual dir with isArchive and real size", name, e)
+		}
+	}
+	if e := byName["top.txt"]; e.IsDir || e.IsArchive {
+		t.Fatalf("top.txt = %+v, want plain file", e)
+	}
+}
+
+// zip 内嵌 zip:逐层进入,内层文件可预览(含 Range)。
+func TestNestedZipRecursion(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	inner := zipBytes(t, map[string]string{"nested.txt": "nested content", "sub/deep.txt": "deep"})
+	writeZipFile(t, filepath.Join(root, "outer.zip"), map[string]string{
+		"inner.zip": string(inner),
+		"top.txt":   "top",
+	})
+
+	// 进入内层 zip 根
+	rr := doGet(t, h, "/api/list?path=outer.zip/inner.zip")
+	assertStatus(t, rr, http.StatusOK)
+	resp := decodeList(t, rr)
+	if !resp.IsDir {
+		t.Fatalf("inner.zip should be a dir")
+	}
+	if len(resp.Entries) != 2 || resp.Entries[0].Name != "sub" || !resp.Entries[0].IsDir {
+		t.Fatalf("inner entries = %+v, want dir 'sub' first", resp.Entries)
+	}
+	if resp.Entries[1].Name != "nested.txt" || resp.Entries[1].IsDir {
+		t.Fatalf("inner entries[1] = %+v, want file nested.txt", resp.Entries[1])
+	}
+
+	// 内层子目录
+	rr = doGet(t, h, "/api/list?path=outer.zip/inner.zip/sub")
+	assertStatus(t, rr, http.StatusOK)
+	resp = decodeList(t, rr)
+	if len(resp.Entries) != 1 || resp.Entries[0].Name != "deep.txt" {
+		t.Fatalf("inner sub entries = %+v, want deep.txt", resp.Entries)
+	}
+
+	// 内层文件预览
+	rr = doGet(t, h, "/api/file?path=outer.zip/inner.zip/nested.txt")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Body.String() != "nested content" {
+		t.Fatalf("body = %q, want nested content", rr.Body.String())
+	}
+
+	// Range/206:嵌套成员可 seek
+	rr = doGetRange(t, h, "/api/file?path=outer.zip/inner.zip/nested.txt", "bytes=0-5")
+	assertStatus(t, rr, http.StatusPartialContent)
+	if rr.Body.String() != "nested" {
+		t.Fatalf("range body = %q, want %q", rr.Body.String(), "nested")
+	}
+}
+
+// tar 内嵌 tar;zip 内嵌 tar;tar 内嵌 zip:交叉嵌套都递归可进。
+func TestCrossNestedArchives(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	innerTar := tarBytes(t, map[string]string{"n.txt": "n", "dir/p.txt": "p"})
+	writeTarFile(t, filepath.Join(root, "outer.tar"), map[string]string{
+		"inner.tar": string(innerTar),
+		"t.txt":     "t",
+	})
+	writeZipFile(t, filepath.Join(root, "zipintar.zip"), map[string]string{
+		"inner.tar": string(innerTar),
+	})
+	writeTarFile(t, filepath.Join(root, "tarinzip.tar"), map[string]string{
+		"inner.zip": string(zipBytes(t, map[string]string{"z.txt": "z"})),
+	})
+
+	// tar 内嵌 tar
+	rr := doGet(t, h, "/api/list?path=outer.tar")
+	assertStatus(t, rr, http.StatusOK)
+	resp := decodeList(t, rr)
+	if len(resp.Entries) != 2 || resp.Entries[0].Name != "inner.tar" || !resp.Entries[0].IsDir || !resp.Entries[0].IsArchive {
+		t.Fatalf("outer.tar entries = %+v, want virtual dir inner.tar", resp.Entries)
+	}
+	rr = doGet(t, h, "/api/list?path=outer.tar/inner.tar")
+	assertStatus(t, rr, http.StatusOK)
+	resp = decodeList(t, rr)
+	if len(resp.Entries) != 2 || resp.Entries[0].Name != "dir" || resp.Entries[1].Name != "n.txt" {
+		t.Fatalf("inner.tar entries = %+v, want dir + n.txt", resp.Entries)
+	}
+	rr = doGet(t, h, "/api/file?path=outer.tar/inner.tar/dir/p.txt")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Body.String() != "p" {
+		t.Fatalf("nested tar member body = %q, want p", rr.Body.String())
+	}
+
+	// zip 内嵌 tar
+	rr = doGet(t, h, "/api/file?path=zipintar.zip/inner.tar/dir/p.txt")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Body.String() != "p" {
+		t.Fatalf("zip->tar member body = %q, want p", rr.Body.String())
+	}
+
+	// tar 内嵌 zip
+	rr = doGet(t, h, "/api/file?path=tarinzip.tar/inner.zip/z.txt")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Body.String() != "z" {
+		t.Fatalf("tar->zip member body = %q, want z", rr.Body.String())
+	}
+}
+
+// 三层嵌套:zip -> zip -> zip。
+func TestTripleNestedZip(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	innermost := zipBytes(t, map[string]string{"leaf.txt": "leaf"})
+	middle := zipBytes(t, map[string]string{"deep.zip": string(innermost)})
+	writeZipFile(t, filepath.Join(root, "top.zip"), map[string]string{"mid.zip": string(middle)})
+
+	rr := doGet(t, h, "/api/list?path=top.zip/mid.zip/deep.zip")
+	assertStatus(t, rr, http.StatusOK)
+	resp := decodeList(t, rr)
+	if !resp.IsDir || len(resp.Entries) != 1 || resp.Entries[0].Name != "leaf.txt" {
+		t.Fatalf("triple nested entries = %+v, want leaf.txt", resp.Entries)
+	}
+	rr = doGet(t, h, "/api/file?path=top.zip/mid.zip/deep.zip/leaf.txt")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Body.String() != "leaf" {
+		t.Fatalf("triple nested body = %q, want leaf", rr.Body.String())
+	}
+}
+
+// 嵌套 zip 下载:内层 zip 成员解压后字节 = 完整 zip 文件;最外层仍是原文件。
+func TestNestedZipDownload(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	inner := zipBytes(t, map[string]string{"n.txt": "n"})
+	writeZipFile(t, filepath.Join(root, "outer.zip"), map[string]string{
+		"inner.zip": string(inner),
+		"top.txt":   "top",
+	})
+
+	// 下载嵌套 zip 成员:字节必须等于内层 zip 的完整字节(可独立解压)
+	rr := doGet(t, h, "/api/download?path=outer.zip/inner.zip")
+	assertStatus(t, rr, http.StatusOK)
+	if !bytes.Equal(rr.Body.Bytes(), inner) {
+		t.Fatalf("nested zip download body != inner zip bytes (len %d vs %d)", rr.Body.Len(), len(inner))
+	}
+	if cd := rr.Header().Get("Content-Disposition"); !strings.Contains(cd, "inner.zip") {
+		t.Fatalf("Content-Disposition = %q, want inner.zip", cd)
+	}
+
+	// 下载最外层归档:仍是原文件字节(链长 1 分支)
+	raw, err := os.ReadFile(filepath.Join(root, "outer.zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr = doGet(t, h, "/api/download?path=outer.zip")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Body.Len() != len(raw) {
+		t.Fatalf("outer download len = %d, want %d", rr.Body.Len(), len(raw))
+	}
+
+	// 下载内层普通文件:与单层行为一致
+	rr = doGet(t, h, "/api/download?path=outer.zip/inner.zip/n.txt")
+	assertStatus(t, rr, http.StatusOK)
+	if rr.Body.String() != "n" {
+		t.Fatalf("nested member download body = %q, want n", rr.Body.String())
+	}
+}
+
+// 嵌套段不是有效归档:404 "not a readable archive",且不泄漏为文件预览。
+func TestNestedBadArchive(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	writeZipFile(t, filepath.Join(root, "outer.zip"), map[string]string{
+		"bad.zip": "this is not a zip",
+	})
+
+	rr := doGet(t, h, "/api/list?path=outer.zip/bad.zip")
+	assertStatus(t, rr, http.StatusNotFound)
+	if !strings.Contains(rr.Body.String(), "not a readable archive") {
+		t.Fatalf("body = %s, want 'not a readable archive'", rr.Body.String())
+	}
+	// 下载同样 404(该位置无法作为归档浏览)
+	rr = doGet(t, h, "/api/download?path=outer.zip/bad.zip")
+	assertStatus(t, rr, http.StatusNotFound)
+}
+
+// 嵌套路径的 ".." 在字符串层被拒绝,与单层一致。
+func TestNestedTraversalRejected(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	inner := zipBytes(t, map[string]string{"secret.txt": "s"})
+	writeZipFile(t, filepath.Join(root, "outer.zip"), map[string]string{"inner.zip": string(inner)})
+
+	for _, p := range []string{
+		"outer.zip/inner.zip/../secret.txt",
+		"outer.zip/inner.zip/../../etc/passwd",
+		"outer.zip/../outer.zip",
+	} {
+		rr := doGet(t, h, "/api/file?path="+p)
+		assertStatus(t, rr, http.StatusBadRequest)
 	}
 }

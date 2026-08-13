@@ -58,6 +58,21 @@ func TestAccessLogErrorStatus(t *testing.T) {
 	}
 }
 
+// openSourceForTest opens a host file as an archiveSource for tests.
+func openSourceForTest(t *testing.T, path string) *archiveSource {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	return &archiveSource{key: path, size: st.Size(), modTime: st.ModTime(), ra: f, closer: f}
+}
+
 // TestSlowScanTarLog 验证 tar 无缓存全量扫描记 [slow] scan-tar(含条目数)。
 // 扫描是浏览 tar 最重的操作,日志必须能对比两次扫描的耗时。
 func TestSlowScanTarLog(t *testing.T) {
@@ -67,7 +82,7 @@ func TestSlowScanTarLog(t *testing.T) {
 	buf := captureLog(t)
 
 	s := &server{tarStore: newTarIndexStore()}
-	ta, err := s.openTarArchive(tarPath)
+	ta, err := s.openTar(openSourceForTest(t, tarPath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +105,7 @@ func TestSlowOpenZipLog(t *testing.T) {
 	writeZipFile(t, zipPath, map[string]string{"x.txt": "x"})
 	buf := captureLog(t)
 
-	za, err := openZipArchive(zipPath)
+	za, err := openZip(openSourceForTest(t, zipPath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +144,7 @@ func TestSlowExtractZipLog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	za, err := openZipArchive(zipPath)
+	za, err := openZip(openSourceForTest(t, zipPath))
 	if err != nil {
 		t.Fatal(err)
 	}

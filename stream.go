@@ -91,7 +91,7 @@ func (s *server) openStream(p string) (*streamState, error) {
 	if err != nil {
 		return nil, err
 	}
-	if loc.archive {
+	if len(loc.chain) > 0 {
 		return s.openArchiveStream(loc)
 	}
 	f, err := os.Open(loc.hostPath)
@@ -125,38 +125,36 @@ func (s *server) openStream(p string) (*streamState, error) {
 	}, nil
 }
 
-// openArchiveStream opens a file member inside a zip/tar archive for streaming.
-// The MIME is sniffed from the head (never the whole member) and the member is
-// decompressed on the fly, so a huge member streams its first chunk immediately
-// instead of being extracted to the disk cache first.
+// openArchiveStream opens a file member inside the deepest archive of an
+// already-resolved chain for streaming. The MIME is sniffed from the head
+// (never the whole member) and the member is decompressed on the fly, so a
+// huge member streams its first chunk immediately instead of being extracted
+// to the disk cache first.
 func (s *server) openArchiveStream(loc location) (*streamState, error) {
-	a, err := s.openArchive(loc.hostPath)
-	if err != nil {
-		return nil, err
-	}
 	if loc.inside == "" {
-		a.close()
+		loc.close()
 		return nil, errors.New("is a directory")
 	}
+	a := loc.inner()
 	e, ok := a.stat(loc.inside)
 	if !ok {
-		a.close()
+		loc.close()
 		return nil, os.ErrNotExist
 	}
 	if e.IsDir {
-		a.close()
+		loc.close()
 		return nil, errors.New("is a directory")
 	}
 	rc, err := a.stream(loc.inside)
 	if err != nil {
-		a.close()
+		loc.close()
 		return nil, err
 	}
 	return &streamState{
 		src: rc,
 		close: func() {
 			rc.Close()
-			a.close()
+			loc.close()
 		},
 		meta: map[string]any{"type": "meta", "name": e.Name, "mime": a.sniff(loc.inside)},
 	}, nil

@@ -5,7 +5,9 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/gob"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -49,16 +51,28 @@ type archive interface {
 	close() error
 }
 
+// archiveSource 描述一个归档的字节来源:宿主文件,或上层归档里的一个
+// 成员(嵌套)。key 是唯一的来源标识——宿主绝对路径,或 "父key/成员路径"
+// ——兼作缓存与日志键;ra 提供对 size 字节的随机访问;closer 负责关闭
+// 底层(文件句柄/成员流),可为 nil。
+type archiveSource struct {
+	key     string
+	size    int64
+	modTime time.Time
+	ra      io.ReaderAt
+	closer  io.Closer
+}
+
 // openArchive opens a zip or tar by extension. Tar indexes are served from a
 // shared, process-wide store so repeated browsing never rescans the archive.
-func (s *server) openArchive(hostPath string) (archive, error) {
-	switch strings.ToLower(filepath.Ext(hostPath)) {
+func (s *server) openArchive(src *archiveSource) (archive, error) {
+	switch strings.ToLower(filepath.Ext(src.key)) {
 	case ".zip":
-		return openZipArchive(hostPath)
+		return openZip(src)
 	case ".tar":
-		return s.openTarArchive(hostPath)
+		return s.openTar(src)
 	}
-	return nil, fmt.Errorf("not an archive: %s", hostPath)
+	return nil, fmt.Errorf("not an archive: %s", src.key)
 }
 
 // cacheDir returns ~/.viewit (falling back to the temp dir when the home
@@ -71,11 +85,13 @@ func cacheDir() string {
 	return filepath.Join(home, ".viewit")
 }
 
-// cacheFileFor maps a file's absolute path to its on-disk cache path:
-// ~/.viewit/<abs path with '/' replaced by '_'>.txt
-func cacheFileFor(abs string) string {
-	key := strings.ReplaceAll(abs, "/", "_")
-	return filepath.Join(cacheDir(), key+".txt")
+// cacheFileFor maps a source key to its on-disk cache path:
+// ~/.viewit/<sha256(key)>.txt. The key can grow long with nested archives
+// (host path + member paths), which would overflow a 255-byte filename
+// component, so the digest replaces it entirely.
+func cacheFileFor(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return filepath.Join(cacheDir(), hex.EncodeToString(sum[:])+".txt")
 }
 
 // writeCacheFile atomically writes data to cachePath (temp file + rename), so
@@ -134,30 +150,34 @@ func (s *sectionReadSeekCloser) Close() error { return nil }
 // zip
 
 type zipArchive struct {
-	hostPath string
-	zr       *zip.ReadCloser
+	key    string
+	zr     *zip.Reader
+	closer io.Closer // 底层来源(宿主文件句柄或上层成员流),可 nil
 }
 
-func openZipArchive(hostPath string) (*zipArchive, error) {
+func openZip(src *archiveSource) (*zipArchive, error) {
 	t0 := time.Now()
-	zr, err := zip.OpenReader(hostPath)
+	zr, err := zip.NewReader(src.ra, src.size)
 	d := time.Since(t0)
 	if err != nil {
 		// 打开失败本身就要留痕:用户点开一个坏 zip 时,这是唯一的线索。
-		log.Printf("[slow] open-zip path=%s error=%v took=%s", hostPath, err, d.Round(time.Millisecond))
+		log.Printf("[slow] open-zip path=%s error=%v took=%s", src.key, err, d.Round(time.Millisecond))
 		return nil, err
 	}
 	// 成功但慢:大 zip 读中央目录可能数百 ms,每次浏览都重新打开,重复
 	// 的 slow 行能暴露"每次列表都慢"。
 	if d >= slowThreshold {
-		if st, err := os.Stat(hostPath); err == nil {
-			log.Printf("[slow] open-zip path=%s size=%d took=%s", hostPath, st.Size(), d.Round(time.Millisecond))
-		}
+		log.Printf("[slow] open-zip path=%s size=%d took=%s", src.key, src.size, d.Round(time.Millisecond))
 	}
-	return &zipArchive{hostPath: hostPath, zr: zr}, nil
+	return &zipArchive{key: src.key, zr: zr, closer: src.closer}, nil
 }
 
-func (z *zipArchive) close() error { return z.zr.Close() }
+func (z *zipArchive) close() error {
+	if z.closer != nil {
+		return z.closer.Close()
+	}
+	return nil
+}
 
 // zipDirs returns every directory path in the archive (explicit entries and
 // parents implied by file entries), mapped to their explicit entry when one
@@ -227,12 +247,19 @@ func (z *zipArchive) list(dir string) ([]fileEntry, error) {
 		if rel == "" || strings.ContainsRune(rel, '/') {
 			continue
 		}
-		children[rel] = fileEntry{
+		e := fileEntry{
 			Name:    rel,
 			Size:    int64(f.UncompressedSize64),
 			ModTime: f.Modified,
 			IsDir:   false,
 		}
+		// zip/tar 成员与宿主上的归档文件同等对待:是虚拟目录,点击进入
+		// 归档浏览(嵌套)。
+		if isArchivePath(rel) {
+			e.IsDir = true
+			e.IsArchive = true
+		}
+		children[rel] = e
 	}
 	entries := make([]fileEntry, 0, len(children))
 	for _, e := range children {
@@ -248,12 +275,18 @@ func (z *zipArchive) stat(name string) (fileEntry, bool) {
 	}
 	for _, f := range z.zr.File {
 		if strings.TrimSuffix(f.Name, "/") == name {
-			return fileEntry{
+			e := fileEntry{
 				Name:    path.Base(name),
 				Size:    int64(f.UncompressedSize64),
 				ModTime: f.Modified,
 				IsDir:   strings.HasSuffix(f.Name, "/"),
-			}, true
+			}
+			// zip/tar 成员是虚拟目录(与列表一致):进入即嵌套浏览。
+			if !e.IsDir && isArchivePath(name) {
+				e.IsDir = true
+				e.IsArchive = true
+			}
+			return e, true
 		}
 	}
 	if _, ok := zipDirs(z.zr.File)[name]; ok {
@@ -288,8 +321,8 @@ func (z *zipArchive) open(name string) (io.ReadSeekCloser, error) {
 	}
 	// Large member: cache the first extraction to disk so Range/seek reads do
 	// not re-decompress from the start every time. The cache is keyed by the
-	// member's full absolute path and validated by uncompressed size.
-	cache := cacheFileFor(z.hostPath + "/" + name)
+	// member's full source key and validated by uncompressed size.
+	cache := cacheFileFor(z.key + "/" + name)
 	if st, err := os.Stat(cache); err == nil && st.Size() == size {
 		if fh, err := os.Open(cache); err == nil {
 			return &fileReadSeekCloser{File: fh}, nil
@@ -325,7 +358,7 @@ func (z *zipArchive) open(name string) (io.ReadSeekCloser, error) {
 	}
 	d := time.Since(t0)
 	log.Printf("[slow] extract-zip path=%s member=%s size=%d took=%s",
-		z.hostPath, name, size, d.Round(time.Millisecond))
+		z.key, name, size, d.Round(time.Millisecond))
 	fh, err := os.Open(cache)
 	if err != nil {
 		return nil, err
@@ -399,7 +432,13 @@ func (ix *tarIndex) stat(name string) (fileEntry, bool) {
 	}
 	if i, ok := ix.find(name); ok {
 		e := ix.entries[i]
-		return fileEntry{Name: path.Base(name), Size: e.Size, ModTime: e.ModTime, IsDir: e.IsDir}, true
+		fe := fileEntry{Name: path.Base(name), Size: e.Size, ModTime: e.ModTime, IsDir: e.IsDir}
+		// zip/tar 成员是虚拟目录(与列表一致):进入即嵌套浏览。
+		if !e.IsDir && isArchivePath(name) {
+			fe.IsDir = true
+			fe.IsArchive = true
+		}
+		return fe, true
 	}
 	// An implied directory has no explicit entry but names a prefix of some
 	// deeper entry.
@@ -438,7 +477,13 @@ func (ix *tarIndex) list(dir string) []fileEntry {
 		if strings.ContainsRune(rel, '/') {
 			children[base] = fileEntry{Name: base, IsDir: true} // implied dir
 		} else {
-			children[base] = fileEntry{Name: base, Size: e.Size, ModTime: e.ModTime, IsDir: e.IsDir}
+			e := fileEntry{Name: base, Size: e.Size, ModTime: e.ModTime, IsDir: e.IsDir}
+			// zip/tar 成员是虚拟目录(与 stat 一致):进入即嵌套浏览。
+			if !e.IsDir && isArchivePath(base) {
+				e.IsDir = true
+				e.IsArchive = true
+			}
+			children[base] = e
 		}
 	}
 	entries := make([]fileEntry, 0, len(children))
@@ -450,14 +495,20 @@ func (ix *tarIndex) list(dir string) []fileEntry {
 }
 
 // tarArchive is a per-request handle: the shared index plus an independently
-// opened file handle (used only via ReadAt, so it is safe alongside other
-// requests' handles).
+// opened source (host file or an upper-level archive member), used only via
+// ReadAt, so it is safe alongside other requests' handles.
 type tarArchive struct {
-	f  *os.File
-	ix *tarIndex
+	ra     io.ReaderAt
+	closer io.Closer // 底层来源,可 nil
+	ix     *tarIndex
 }
 
-func (ta *tarArchive) close() error { return ta.f.Close() }
+func (ta *tarArchive) close() error {
+	if ta.closer != nil {
+		return ta.closer.Close()
+	}
+	return nil
+}
 func (ta *tarArchive) list(dir string) ([]fileEntry, error) {
 	return ta.ix.list(dir), nil
 }
@@ -468,7 +519,7 @@ func (ta *tarArchive) open(name string) (io.ReadSeekCloser, error) {
 		return nil, os.ErrNotExist
 	}
 	e := ta.ix.entries[i]
-	return &sectionReadSeekCloser{SectionReader: io.NewSectionReader(ta.f, e.Offset, e.Size)}, nil
+	return &sectionReadSeekCloser{SectionReader: io.NewSectionReader(ta.ra, e.Offset, e.Size)}, nil
 }
 
 func (ta *tarArchive) sniff(name string) string {
@@ -481,7 +532,7 @@ func (ta *tarArchive) sniff(name string) string {
 	if e.Size < int64(len(head)) {
 		head = head[:int(e.Size)]
 	}
-	if _, err := ta.f.ReadAt(head, e.Offset); err != nil && err != io.EOF {
+	if _, err := ta.ra.ReadAt(head, e.Offset); err != nil && err != io.EOF {
 		return ""
 	}
 	return sniffMimeFrom(bytes.NewReader(head))
@@ -513,75 +564,64 @@ func newTarIndexStore() *tarIndexStore {
 	return &tarIndexStore{cache: map[string]*cachedTarIndex{}}
 }
 
-func (st *tarIndexStore) get(hostPath string, size int64, modTime time.Time) *tarIndex {
+func (st *tarIndexStore) get(key string, size int64, modTime time.Time) *tarIndex {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if c, ok := st.cache[hostPath]; ok && c.size == size && c.modTime.Equal(modTime) {
+	if c, ok := st.cache[key]; ok && c.size == size && c.modTime.Equal(modTime) {
 		return c.index
 	}
 	return nil
 }
 
-func (st *tarIndexStore) put(hostPath string, size int64, modTime time.Time, ix *tarIndex) {
+func (st *tarIndexStore) put(key string, size int64, modTime time.Time, ix *tarIndex) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.count+len(ix.entries) > tarIndexStoreMaxEntries {
 		st.cache = map[string]*cachedTarIndex{}
 		st.count = 0
 	}
-	st.cache[hostPath] = &cachedTarIndex{size: size, modTime: modTime, index: ix}
+	st.cache[key] = &cachedTarIndex{size: size, modTime: modTime, index: ix}
 	st.count += len(ix.entries)
 }
 
-// openTarArchive opens a tar for one request. The entry index comes from the
+// openTar opens a tar for one request. The entry index comes from the
 // resident store when available, then from the on-disk cache, then from a
-// full scan; the file handle is opened fresh for this request.
-func (s *server) openTarArchive(hostPath string) (*tarArchive, error) {
-	f, err := os.Open(hostPath)
-	if err != nil {
-		return nil, err
-	}
-	st, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, err
+// full scan; the source (host file or upper-level member) is passed in.
+func (s *server) openTar(src *archiveSource) (*tarArchive, error) {
+	if ix := s.tarStore.get(src.key, src.size, src.modTime); ix != nil {
+		return &tarArchive{ra: src.ra, closer: src.closer, ix: ix}, nil
 	}
 
-	if ix := s.tarStore.get(hostPath, st.Size(), st.ModTime()); ix != nil {
-		return &tarArchive{f: f, ix: ix}, nil
-	}
-
-	cache := cacheFileFor(hostPath)
+	cache := cacheFileFor(src.key)
 	var ix *tarIndex
-	if st.Size() > archiveThreshold {
+	if src.size > archiveThreshold {
 		t0 := time.Now()
-		ix, _ = loadTarIndexCache(cache, st.Size(), st.ModTime())
+		ix, _ = loadTarIndexCache(cache, src.size, src.modTime)
 		// 磁盘索引解码是大档案(16MiB+)特有的开销,重复的 slow 行能暴露
 		// 缓存未命中导致的反复重扫。
 		if d := time.Since(t0); d >= slowThreshold {
-			log.Printf("[slow] tar-index-load path=%s size=%d took=%s", hostPath, st.Size(), d.Round(time.Millisecond))
+			log.Printf("[slow] tar-index-load path=%s size=%d took=%s", src.key, src.size, d.Round(time.Millisecond))
 		}
 	}
 	if ix == nil {
 		// 全量扫描是整个 tar 浏览最重的操作(多 GB 档案可达数十秒),无论
 		// 成败都留痕:失败行说明档案损坏,成功行用于对比两次扫描的耗时。
 		t0 := time.Now()
-		entries, err := scanTar(bufio.NewReaderSize(f, scanBufSize))
+		entries, err := scanTar(bufio.NewReaderSize(io.NewSectionReader(src.ra, 0, src.size), scanBufSize))
 		d := time.Since(t0)
 		if err != nil {
-			log.Printf("[slow] scan-tar path=%s size=%d error=%v took=%s", hostPath, st.Size(), err, d.Round(time.Millisecond))
-			f.Close()
+			log.Printf("[slow] scan-tar path=%s size=%d error=%v took=%s", src.key, src.size, err, d.Round(time.Millisecond))
 			return nil, err
 		}
 		ix = newTarIndex(entries)
-		log.Printf("[slow] scan-tar path=%s size=%d entries=%d took=%s", hostPath, st.Size(), len(entries), d.Round(time.Millisecond))
-		if st.Size() > archiveThreshold {
-			_ = writeTarIndexCache(cache, st.Size(), st.ModTime(), ix) // best effort
+		log.Printf("[slow] scan-tar path=%s size=%d entries=%d took=%s", src.key, src.size, len(entries), d.Round(time.Millisecond))
+		if src.size > archiveThreshold {
+			_ = writeTarIndexCache(cache, src.size, src.modTime, ix) // best effort
 		}
 	}
 
-	s.tarStore.put(hostPath, st.Size(), st.ModTime(), ix)
-	return &tarArchive{f: f, ix: ix}, nil
+	s.tarStore.put(src.key, src.size, src.modTime, ix)
+	return &tarArchive{ra: src.ra, closer: src.closer, ix: ix}, nil
 }
 
 // offsetReader tracks the absolute byte offset consumed by the tar.Reader so
