@@ -4,7 +4,6 @@
   import FileFinder from './FileFinder.svelte'
   import CodeViewer from './CodeViewer.svelte'
   import ImageViewer from './ImageViewer.svelte'
-  import TiffViewer from './TiffViewer.svelte'
   import VideoViewer from './VideoViewer.svelte'
   import AudioViewer from './AudioViewer.svelte'
   import PdfViewer from './PdfViewer.svelte'
@@ -198,8 +197,6 @@
         <StreamViewer path={filePath} name={selected.name} />
       {:else if view === 'image'}
         <ImageViewer path={filePath} />
-      {:else if view === 'tiff'}
-        <TiffViewer path={filePath} name={selected.name} />
       {:else if view === 'video'}
         <VideoViewer path={filePath} />
       {:else if view === 'audio'}

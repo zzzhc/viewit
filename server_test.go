@@ -181,6 +181,75 @@ func TestListPagination(t *testing.T) {
 	}
 }
 
+// TestListImages 覆盖 /api/list?images=1:只返回目录下图片文件名(目录排序
+// 序,目录/归档视为目录排除,扩展名大小写不敏感),不做分页;归档内部路径
+// 同样支持。该列表是图片查看器"上一张/下一张"切换的契约。
+func TestListImages(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	if err := os.Mkdir(filepath.Join(root, "pics"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"d.txt", "B.JPG", "a.png", "e.gif", "c.tif"} {
+		writeFile(t, filepath.Join(root, name), "x")
+	}
+
+	rr := doGet(t, h, "/api/list?path=&images=1")
+	assertStatus(t, rr, http.StatusOK)
+	resp := decodeList(t, rr)
+	if !resp.IsDir || resp.Images == nil {
+		t.Fatalf("want dir with images, got %+v", resp)
+	}
+	want := []string{"B.JPG", "a.png", "c.tif", "e.gif"}
+	if len(resp.Images) != len(want) {
+		t.Fatalf("images = %v, want %v", resp.Images, want)
+	}
+	for i, n := range want {
+		if resp.Images[i] != n {
+			t.Fatalf("images = %v, want %v", resp.Images, want)
+		}
+	}
+	if resp.Total != 0 || resp.Offset != 0 || len(resp.Entries) != 0 {
+		t.Fatalf("images=1 不应返回分页字段: %+v", resp)
+	}
+
+	// 归档内部:图片成员按同序返回,目录成员排除
+	writeZipFile(t, filepath.Join(root, "a.zip"), map[string]string{
+		"img/pic1.png":  "p1",
+		"img/pic2.JPG":  "p2",
+		"img/note.txt":  "n",
+		"img/":          "",
+		"docs/readme":   "r",
+		"pic0.png":      "p0",
+	})
+	rr = doGet(t, h, "/api/list?path=a.zip&images=1")
+	assertStatus(t, rr, http.StatusOK)
+	resp = decodeList(t, rr)
+	want = []string{"pic0.png"}
+	if len(resp.Images) != len(want) || resp.Images[0] != want[0] {
+		t.Fatalf("zip root images = %v, want %v", resp.Images, want)
+	}
+	rr = doGet(t, h, "/api/list?path=a.zip/img&images=1")
+	assertStatus(t, rr, http.StatusOK)
+	resp = decodeList(t, rr)
+	want = []string{"pic1.png", "pic2.JPG"}
+	if len(resp.Images) != len(want) {
+		t.Fatalf("zip img images = %v, want %v", resp.Images, want)
+	}
+	for i, n := range want {
+		if resp.Images[i] != n {
+			t.Fatalf("zip img images = %v, want %v", resp.Images, want)
+		}
+	}
+
+	// 单文件路径:images=1 不影响单文件分支(返回 file)
+	rr = doGet(t, h, "/api/list?path=a.png&images=1")
+	assertStatus(t, rr, http.StatusOK)
+	resp = decodeList(t, rr)
+	if resp.IsDir || resp.File == nil || resp.File.Name != "a.png" {
+		t.Fatalf("file branch with images=1: want file a.png, got %+v", resp)
+	}
+}
+
 func TestListFilePathReturnsFile(t *testing.T) {
 	h, root := newTestHandler(t, false)
 	writeFile(t, filepath.Join(root, "x.go"), "package main\n")

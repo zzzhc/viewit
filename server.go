@@ -50,6 +50,22 @@ type listResponse struct {
 	Offset  int         `json:"offset,omitempty"` // 目录模式:本页在总条目中的起始下标
 	Entries []fileEntry `json:"entries,omitempty"`
 	File    *fileEntry  `json:"file,omitempty"`
+	Images  []string    `json:"images,omitempty"` // images=1 时:目录下图片文件名(目录排序序),供图片查看器上一张/下一张切换
+}
+
+// imageExts 是图片查看器"上一张/下一张"切换的扩展名集合,必须与
+// frontend/src/viewers.js 的 IMAGE+TIFF 保持一致(两端同步修改),
+// 否则切换会漏掉或误收文件。
+var imageExts = map[string]bool{
+	"png": true, "jpg": true, "jpeg": true, "jfif": true, "gif": true,
+	"webp": true, "svg": true, "bmp": true, "avif": true, "apng": true,
+	"ico": true, "tif": true, "tiff": true,
+}
+
+// isImageName 按扩展名(不区分大小写)判定文件名是否为图片。
+func isImageName(name string) bool {
+	i := strings.LastIndexByte(name, '.')
+	return i >= 0 && imageExts[strings.ToLower(name[i+1:])]
 }
 
 //	newHandler canonicalizes root (Abs + EvalSymlinks) and wires the routes:
@@ -292,6 +308,18 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 			}
 			return views[i].de.Name() < views[j].de.Name() // byte-wise ascending
 		})
+		// images=1:只返回图片文件名列表(排序序),不做分页、不 stat——
+		// 切换上一张/下一张只需要名字,避免大目录下为整目录条目取 stat。
+		if r.URL.Query().Get("images") == "1" {
+			imgs := make([]string, 0, len(views)/4)
+			for _, v := range views {
+				if !v.isDir && isImageName(v.de.Name()) {
+					imgs = append(imgs, v.de.Name())
+				}
+			}
+			writeJSON(w, http.StatusOK, listResponse{Path: cp, IsDir: true, Images: imgs})
+			return
+		}
 		total := len(views)
 		offset, limit := listRange(r)
 		if offset > total {
@@ -339,6 +367,16 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 	entries, err := a.list(loc.inside)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if r.URL.Query().Get("images") == "1" {
+		imgs := make([]string, 0, len(entries)/4)
+		for _, e := range entries {
+			if !e.IsDir && isImageName(e.Name) {
+				imgs = append(imgs, e.Name)
+			}
+		}
+		writeJSON(w, http.StatusOK, listResponse{Path: cp, IsDir: true, Images: imgs})
 		return
 	}
 	total := len(entries)

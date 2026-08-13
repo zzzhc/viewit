@@ -7,9 +7,9 @@ hljs.registerLanguage('postscript', postscript)
 
 // Browsers can actually render these. HEIC/HEIF deliberately excluded:
 // Chrome does not decode them in <img>, a broken image is worse than download.
-export const IMAGE = ['png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'svg', 'bmp', 'avif', 'apng', 'ico']
-// TIFF 同样不能走 <img>,由 TiffViewer 用 UTIF.js 解码后画到 canvas(多页)。
-export const TIFF = ['tif', 'tiff']
+// tif/tiff 也在 IMAGE 里:浏览器 <img> 不支持 TIFF,由 ImageViewer 用
+// UTIF.js 解码成 PNG(多页展开为多个列表项)后统一显示。
+export const IMAGE = ['png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'svg', 'bmp', 'avif', 'apng', 'ico', 'tif', 'tiff']
 export const VIDEO = ['mp4', 'webm', 'ogv', 'mov', 'm4v']
 export const AUDIO = ['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus', 'weba']
 export const PDF = ['pdf']
@@ -157,6 +157,12 @@ const CODE_LANG = {
 export function extension(name) {
   const i = name.lastIndexOf('.')
   return i >= 0 ? name.slice(i + 1).toLowerCase() : ''
+}
+
+// tif/tiff 需要 ImageViewer 先解码成 PNG(.gz 对前端透明,先剥离)。
+export function isTifName(name) {
+  const ext = extension(name.replace(/\.gz$/i, ''))
+  return ext === 'tif' || ext === 'tiff'
 }
 
 // Returns an hljs language name, or 'plaintext' when the mapping resolves but
@@ -356,7 +362,7 @@ export async function copyText(text) {
 export const FILE_TYPES = buildFileTypes()
 
 const VIEW_LABELS = {
-  image: '图片', tiff: 'TIFF', video: '视频', audio: '音频', pdf: 'PDF',
+  image: '图片', video: '视频', audio: '音频', pdf: 'PDF',
   xml: 'XML', markdown: 'Markdown', html: 'HTML', jsonl: 'JSONL',
   code: '代码/文本', download: '下载'
 }
@@ -375,7 +381,6 @@ function buildFileTypes() {
     if (!map.has(key)) map.set(key, { name: key, view, lang: lang || '' })
   }
   IMAGE.forEach((e) => put(e, 'image'))
-  TIFF.forEach((e) => put(e, 'tiff'))
   VIDEO.forEach((e) => put(e, 'video'))
   AUDIO.forEach((e) => put(e, 'audio'))
   PDF.forEach((e) => put(e, 'pdf'))
@@ -411,11 +416,8 @@ export function viewerFor(name, mime) {
   const ext = extension(lower)
   const mt = (mime || '').split(';')[0].trim().toLowerCase()
 
-  // image/tiff 不能进 <img>(浏览器不解码),单独走 TiffViewer
-  if (mt.startsWith('image/')) {
-    if (mt === 'image/tiff') return 'tiff'
-    return 'image'
-  }
+  // image/tiff 由 ImageViewer 用 UTIF.js 解码后显示,与其余图片同路
+  if (mt.startsWith('image/')) return 'image'
   if (mt.startsWith('video/')) return 'video'
   if (mt.startsWith('audio/')) return 'audio'
   if (mt === 'application/pdf') return 'pdf'
@@ -435,7 +437,6 @@ export function viewerFor(name, mime) {
   // override what the content says (a .json holding a zip is a zip)
   if (mt && mt !== 'application/octet-stream' && mt !== 'application/ogg') return 'download'
   // unidentified content: media extension is the only hint the sniffer lacks
-  if (TIFF.includes(ext)) return 'tiff'
   if (IMAGE.includes(ext)) return 'image'
   if (VIDEO.includes(ext)) return 'video'
   if (AUDIO.includes(ext)) return 'audio'
