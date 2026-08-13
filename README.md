@@ -30,7 +30,7 @@
 
 | 类型 | 说明 |
 |---|---|
-| 图片 / 视频 / 音频 | 浏览器原生播放与预览 |
+| 图片 / 视频 / 音频 | 浏览器原生播放与预览;TIFF(含多页)由 UTIF.js 解码预览 |
 | 源代码 / 文本 | 语法高亮,含 Dockerfile、go.mod 等特殊文件;超 5MB 提示下载 |
 | Markdown | 双栏实时渲染:LaTeX、Mermaid、GFM、原始 HTML |
 | PDF / XML / JSONL | 直接查看 |

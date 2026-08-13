@@ -994,7 +994,7 @@ func assetContentType(name string) string {
 // sniffMime reads the head of the file and returns a content-based MIME type
 // (type/subtype only, no parameters). Content is the source of truth: a file
 // named .png holding text comes back as text/plain. Custom signatures fill
-// the gaps in http.DetectContentType's table (svg, webm/mkv, avif, ico).
+// the gaps in http.DetectContentType's table (svg, webm/mkv, avif, ico, tiff).
 func sniffMime(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -1028,6 +1028,11 @@ func sniffMimeFrom(r io.Reader) string {
 		return "image/avif"
 	case len(head) >= 4 && head[0] == 0 && head[1] == 0 && head[2] == 1 && head[3] == 0:
 		return "image/x-icon"
+		// TIFF 签名("II*\0" 小端 / "MM\0*" 大端)不在 DetectContentType 的表里
+	case len(head) >= 4 &&
+		((head[0] == 0x49 && head[1] == 0x49 && head[2] == 0x2a && head[3] == 0x00) ||
+			(head[0] == 0x4d && head[1] == 0x4d && head[2] == 0x00 && head[3] == 0x2a)):
+		return "image/tiff"
 	}
 	mt := http.DetectContentType(head)
 	if i := strings.IndexByte(mt, ';'); i >= 0 {

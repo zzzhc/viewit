@@ -5,9 +5,11 @@ import postscript from './postscript.js'
 // bundled language; postscript is the only grammar supplied by this project.
 hljs.registerLanguage('postscript', postscript)
 
-// Browsers can actually render these. HEIC/HEIF/TIFF deliberately excluded:
+// Browsers can actually render these. HEIC/HEIF deliberately excluded:
 // Chrome does not decode them in <img>, a broken image is worse than download.
 export const IMAGE = ['png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'svg', 'bmp', 'avif', 'apng', 'ico']
+// TIFF 同样不能走 <img>,由 TiffViewer 用 UTIF.js 解码后画到 canvas(多页)。
+export const TIFF = ['tif', 'tiff']
 export const VIDEO = ['mp4', 'webm', 'ogv', 'mov', 'm4v']
 export const AUDIO = ['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus', 'weba']
 export const PDF = ['pdf']
@@ -354,7 +356,7 @@ export async function copyText(text) {
 export const FILE_TYPES = buildFileTypes()
 
 const VIEW_LABELS = {
-  image: '图片', video: '视频', audio: '音频', pdf: 'PDF',
+  image: '图片', tiff: 'TIFF', video: '视频', audio: '音频', pdf: 'PDF',
   xml: 'XML', markdown: 'Markdown', html: 'HTML', jsonl: 'JSONL',
   code: '代码/文本', download: '下载'
 }
@@ -373,6 +375,7 @@ function buildFileTypes() {
     if (!map.has(key)) map.set(key, { name: key, view, lang: lang || '' })
   }
   IMAGE.forEach((e) => put(e, 'image'))
+  TIFF.forEach((e) => put(e, 'tiff'))
   VIDEO.forEach((e) => put(e, 'video'))
   AUDIO.forEach((e) => put(e, 'audio'))
   PDF.forEach((e) => put(e, 'pdf'))
@@ -408,7 +411,11 @@ export function viewerFor(name, mime) {
   const ext = extension(lower)
   const mt = (mime || '').split(';')[0].trim().toLowerCase()
 
-  if (mt.startsWith('image/')) return 'image'
+  // image/tiff 不能进 <img>(浏览器不解码),单独走 TiffViewer
+  if (mt.startsWith('image/')) {
+    if (mt === 'image/tiff') return 'tiff'
+    return 'image'
+  }
   if (mt.startsWith('video/')) return 'video'
   if (mt.startsWith('audio/')) return 'audio'
   if (mt === 'application/pdf') return 'pdf'
@@ -428,6 +435,7 @@ export function viewerFor(name, mime) {
   // override what the content says (a .json holding a zip is a zip)
   if (mt && mt !== 'application/octet-stream' && mt !== 'application/ogg') return 'download'
   // unidentified content: media extension is the only hint the sniffer lacks
+  if (TIFF.includes(ext)) return 'tiff'
   if (IMAGE.includes(ext)) return 'image'
   if (VIDEO.includes(ext)) return 'video'
   if (AUDIO.includes(ext)) return 'audio'

@@ -499,6 +499,9 @@ func TestListMimeFromContent(t *testing.T) {
 		"clip.webm": {[]byte{0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x00, 0x00, 0x00}, "video/webm"},
 		"img.avif":  {[]byte{0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p', 'a', 'v', 'i', 'f'}, "image/avif"},
 		"icon.ico":  {[]byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x00}, "image/x-icon"},
+		// TIFF 签名不在 DetectContentType 表里,由自定义签名兜底(小端/大端)
+		"le.tif":    {[]byte{0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00}, "image/tiff"},
+		"be.tiff":   {[]byte{0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08}, "image/tiff"},
 		"notes.map": {[]byte("{\"version\":3,\"sources\":[]}\n"), "application/json"},
 		"arr.json":  {[]byte("[\n  1,\n  2\n]\n"), "application/json"},
 		"doc.go":    {[]byte("package main\n"), "text/plain"},
