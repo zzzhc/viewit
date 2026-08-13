@@ -59,7 +59,6 @@ const CODE_LANG = {
   yml: 'yaml',
   json: 'json',
   jsonc: 'json',
-  jsonl: 'json', // NDJSON
   map: 'json', // source maps (.map) are JSON
   ipynb: 'json', // Jupyter notebooks are JSON
   toml: 'ini', // no toml grammar in hljs 11; ini covers [section]/key=value
@@ -237,12 +236,13 @@ export function viewerFor(name, mime) {
   if (mt.startsWith('audio/')) return 'audio'
   if (mt === 'application/pdf') return 'pdf'
   if (mt === 'application/xml' || mt === 'text/xml') return 'xml'
-  if (mt === 'application/json' || mt === 'application/xml') return 'code'
+  if (mt === 'application/json') {
+    if (ext === 'jsonl' || ext === 'jsonlines') return 'jsonl'
+    return 'code'
+  }
   if (mt.startsWith('text/')) {
-    if (ext === 'svg') return 'image'
-    if (ext === 'html' || ext === 'htm' || mt === 'text/html') return 'html'
-    if (ext === 'xml' || ext === 'xsd' || ext === 'xsl' || ext === 'xslt') return 'xml'
     if (ext === 'md' || ext === 'markdown' || mt === 'text/markdown') return 'markdown'
+    if (ext === 'jsonl' || ext === 'jsonlines') return 'jsonl'
     return 'code'
   }
   // any other identified mime is binary non-media: the filename must not
@@ -256,6 +256,7 @@ export function viewerFor(name, mime) {
   if (ext === 'html' || ext === 'htm') return 'html'
   if (ext === 'xml' || ext === 'xsd' || ext === 'xsl' || ext === 'xslt') return 'xml'
   if (ext === 'md' || ext === 'markdown') return 'markdown'
+  if (ext === 'jsonl' || ext === 'jsonlines') return 'jsonl'
   if (codeLanguage(lower) !== null || TEXT.includes(ext) || TEXT.includes(lower)) return 'code'
   return 'download'
 }

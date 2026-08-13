@@ -10,6 +10,7 @@
   import XmlViewer from './XmlViewer.svelte'
   import MarkdownViewer from './MarkdownViewer.svelte'
   import HtmlViewer from './HtmlViewer.svelte'
+  import JsonlViewer from './JsonlViewer.svelte'
   import DownloadViewer from './DownloadViewer.svelte'
   import { listDir, LIST_CHUNK } from './api.js'
   import { downloadUrl } from './api.js'
@@ -180,6 +181,8 @@
         <MarkdownViewer path={filePath} name={selected.name} />
       {:else if view === 'html'}
         <HtmlViewer path={filePath} name={selected.name} />
+      {:else if view === 'jsonl'}
+        <JsonlViewer path={filePath} name={selected.name} />
       {:else}
         <DownloadViewer path={filePath} name={selected.name} size={selected.size} />
       {/if}

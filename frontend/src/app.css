@@ -347,6 +347,52 @@
   .finder-path mark {
     @apply bg-transparent font-semibold text-accent;
   }
+
+  /* ---- JSONL 表格 ---- */
+  .jsonl-table-wrap {
+    @apply min-h-0 flex-1 overflow-auto;
+  }
+  .jsonl-table {
+    @apply border-collapse text-[13px] font-mono;
+    width: max-content;
+    min-width: 100%;
+  }
+  .jsonl-table th,
+  .jsonl-table td {
+    @apply border border-edge px-2.5 py-1 text-left align-top whitespace-nowrap;
+    max-width: 360px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .jsonl-table thead th {
+    @apply sticky top-0 z-10 bg-panel font-semibold;
+  }
+  .jsonl-table .col-no {
+    @apply sticky left-0 z-[5] bg-bg text-right font-mono text-muted select-none;
+    min-width: 48px;
+  }
+  .jsonl-table thead th.col-no {
+    z-index: 20;
+  }
+  .jsonl-table .row-scalar td {
+    @apply text-muted;
+  }
+  .jsonl-table .row-error td {
+    @apply text-danger;
+  }
+  .jsonl-table tbody tr.clickable {
+    cursor: pointer;
+  }
+
+  /* ---- JSONL 行详情面板 ---- */
+  .jsonl-detail {
+    @apply flex flex-none flex-col border-l border-edge bg-bg;
+    width: 46%;
+    min-width: 360px;
+  }
+  .jsonl-detail-toolbar {
+    @apply flex flex-none items-center justify-between gap-2 border-b border-edge bg-panel px-3 py-2;
+  }
 }
 
 /* ---- 代码高亮(自绘主题,颜色由 --hl-* 变量驱动,随深浅主题切换) ---- */
