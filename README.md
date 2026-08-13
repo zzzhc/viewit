@@ -48,6 +48,10 @@ cd frontend && npm run dev                # Vite HMR,代理 /api 到 :8080
 
 # 构建与测试
 ./build.sh      # 前端构建 + 预 gzip + 静态裁剪编译,产物为单文件 viewit
+# 手工构建:npm run build 后必须先 go generate(把 frontend/dist 预 gzip 成
+# frontend/dist.gz,go:embed 嵌入的是 dist.gz),再 go build;漏跑 go generate
+# 会嵌入上一次的旧前端。
+cd frontend && npm run build && cd .. && go generate ./... && go build
 go vet ./... && go test ./...
 ```
 

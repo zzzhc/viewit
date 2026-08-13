@@ -116,6 +116,44 @@ func TestListDirsFirst(t *testing.T) {
 	}
 }
 
+// TestListArchiveSize 覆盖 zip/tar 文件在目录列表中的契约:它们作为目录
+// 排在前列(isDir=true,点击进入归档浏览),但仍是真实文件——isArchive=true
+// 且 size 为磁盘上真实大小,前端据此显示大小而非 "-";真实目录无大小
+// (isArchive 缺省 false),保持 "-"。
+func TestListArchiveSize(t *testing.T) {
+	h, root := newTestHandler(t, false)
+	writeZipFile(t, filepath.Join(root, "a.zip"), map[string]string{"x.txt": "x"})
+	writeFile(t, filepath.Join(root, "b.tar"), strings.Repeat("x", 1024)) // 只需扩展名,内容无关
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "f.txt"), "f")
+
+	rr := doGet(t, h, "/api/list?path=")
+	assertStatus(t, rr, http.StatusOK)
+	resp := decodeList(t, rr)
+	byName := map[string]fileEntry{}
+	for _, e := range resp.Entries {
+		byName[e.Name] = e
+	}
+	z := byName["a.zip"]
+	if !z.IsDir || !z.IsArchive || z.Size <= 0 {
+		t.Fatalf("a.zip = %+v, want isDir+isArchive with real size", z)
+	}
+	tar := byName["b.tar"]
+	if !tar.IsDir || !tar.IsArchive || tar.Size != 1024 {
+		t.Fatalf("b.tar = %+v, want isDir+isArchive with size 1024", tar)
+	}
+	d := byName["dir"]
+	if !d.IsDir || d.IsArchive {
+		t.Fatalf("dir = %+v, want plain dir without isArchive", d)
+	}
+	f := byName["f.txt"]
+	if f.IsDir || f.IsArchive {
+		t.Fatalf("f.txt = %+v, want plain file", f)
+	}
+}
+
 // TestListPagination 覆盖目录列表的 limit/offset 分页:排序全局一致(目录
 // 优先 + 名称升序),每页只含切片内的条目,total 报告全量;不带参数时
 // 保持全量旧行为。

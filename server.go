@@ -36,11 +36,12 @@ type server struct {
 }
 
 type fileEntry struct {
-	Name    string    `json:"name"`
-	Size    int64     `json:"size"`
-	ModTime time.Time `json:"modTime"`
-	IsDir   bool      `json:"isDir"`
-	Mime    string    `json:"mime,omitempty"` // content-sniffed, type/subtype only
+	Name      string    `json:"name"`
+	Size      int64     `json:"size"`
+	ModTime   time.Time `json:"modTime"`
+	IsDir     bool      `json:"isDir"`
+	IsArchive bool      `json:"isArchive,omitempty"` // zip/tar 文件:真实文件,点击进入归档浏览
+	Mime      string    `json:"mime,omitempty"`      // content-sniffed, type/subtype only
 }
 
 type listResponse struct {
@@ -291,16 +292,19 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 		// zip/tar 文件视为目录:先为每个条目一次性判定 isDir(含归档),再
 		// 排序,避免在排序比较器里反复做路径拼接。
 		type view struct {
-			de    os.DirEntry
-			isDir bool
+			de        os.DirEntry
+			isDir     bool
+			isArchive bool
 		}
 		views := make([]view, len(dirEntries))
 		for i, de := range dirEntries {
 			isDir := de.IsDir()
+			isArchive := false
 			if !isDir {
-				isDir = isArchivePath(filepath.Join(loc.hostPath, de.Name()))
+				isArchive = isArchivePath(filepath.Join(loc.hostPath, de.Name()))
+				isDir = isArchive
 			}
-			views[i] = view{de: de, isDir: isDir}
+			views[i] = view{de: de, isDir: isDir, isArchive: isArchive}
 		}
 		sort.Slice(views, func(i, j int) bool {
 			if views[i].isDir != views[j].isDir {
@@ -336,10 +340,11 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 				continue // unreadable entry: skip rather than fail the listing
 			}
 			entries = append(entries, fileEntry{
-				Name:    v.de.Name(),
-				Size:    info.Size(),
-				ModTime: info.ModTime(),
-				IsDir:   v.isDir,
+				Name:      v.de.Name(),
+				Size:      info.Size(),
+				ModTime:   info.ModTime(),
+				IsDir:     v.isDir,
+				IsArchive: v.isArchive,
 			})
 		}
 		writeJSON(w, http.StatusOK, listResponse{

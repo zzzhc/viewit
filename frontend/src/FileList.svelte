@@ -120,7 +120,7 @@
                 {/if}
                 <span class="truncate" title={row.name}>{row.name}</span>
               </div>
-              <div class="text-muted">{row.isDir ? '-' : formatSize(row.size)}</div>
+              <div class="text-muted">{row.isDir && !row.isArchive ? '-' : formatSize(row.size)}</div>
               <div class="text-muted">{formatDate(row.modTime)}</div>
               <div class="flex justify-end">
                 <a
