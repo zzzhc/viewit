@@ -19,6 +19,7 @@
     ['markdown', 'Markdown'],
     ['html', 'HTML'],
     ['jsonl', 'JSONL'],
+    ['sqlite', 'SQLite'],
     ['code', '代码/文本']
   ]
 

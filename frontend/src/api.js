@@ -88,3 +88,54 @@ export function leveldbDumpUrl(path, prefix) {
 export function ldbName(prefix) {
   return 'dump-' + (prefix.replace(/[^A-Za-z0-9._-]+/g, '_') || 'all') + '.jsonl'
 }
+
+// ---- SQLite 查看器 ----
+
+// sqliteTables 返回库中的表/视图列表(含行数与 CREATE 语句)。
+// 返回 { tables: [{ name, type, sql, rows }] }。
+export async function sqliteTables(path) {
+  const res = await fetch(`/api/sqlite/tables?path=${encodeURIComponent(path)}`)
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    throw new Error((data && data.error) || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+// sqliteRows 分页拉取表数据:返回 { columns, rows, hasMore, total? }。
+// total 仅在 offset=0 时下发(深分页免重复 COUNT)。
+export async function sqliteRows(path, table, { offset = 0, limit = 500 } = {}) {
+  const q = [
+    `path=${encodeURIComponent(path)}`,
+    `table=${encodeURIComponent(table)}`,
+    `offset=${offset}`,
+    `limit=${limit}`,
+  ].join('&')
+  const res = await fetch(`/api/sqlite/rows?${q}`)
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    throw new Error((data && data.error) || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+// sqliteQuery 执行只读 SQL:返回 { columns, rows, truncated }。
+// 写语句被服务端(query_only)拒绝并抛错。
+export async function sqliteQuery(path, sql, { limit = 500 } = {}) {
+  const q = `path=${encodeURIComponent(path)}&sql=${encodeURIComponent(sql)}&limit=${limit}`
+  const res = await fetch(`/api/sqlite/query?${q}`)
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    throw new Error((data && data.error) || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+// sqliteExportUrl 是流式导出(CSV/JSONL)的下载 URL:table 或 sql 二选一。
+// sql 模式导出完整查询结果(不受 query 接口的行数截断限制)。
+export function sqliteExportUrl(path, { table = '', sql = '', format = 'csv' } = {}) {
+  const q = [`path=${encodeURIComponent(path)}`, `format=${format}`]
+  if (table) q.push(`table=${encodeURIComponent(table)}`)
+  if (sql) q.push(`sql=${encodeURIComponent(sql)}`)
+  return `/api/sqlite/export?${q.join('&')}`
+}

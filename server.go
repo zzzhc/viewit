@@ -37,6 +37,9 @@ type server struct {
 
 	ldbMu    sync.Mutex               // guards ldbCache
 	ldbCache map[string]*ldbEntry     // leveldb 只读句柄缓存,按规范路径
+
+	sqMu    sync.Mutex           // guards sqCache
+	sqCache map[string]*sqEntry  // sqlite 只读句柄缓存,按规范路径
 }
 
 type fileEntry struct {
@@ -91,7 +94,7 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("root %q: %w", root, err)
 	}
-	s := &server{root: resolved, idx: &findIndex{}, tarStore: newTarIndexStore(), ldbCache: map[string]*ldbEntry{}}
+	s := &server{root: resolved, idx: &findIndex{}, tarStore: newTarIndexStore(), ldbCache: map[string]*ldbEntry{}, sqCache: map[string]*sqEntry{}}
 
 	dist, err := fs.Sub(embedFS, "frontend/dist.gz")
 	if err != nil {
@@ -119,6 +122,12 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	mux.Handle("GET /api/leveldb/keys", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleLevelDBKeys))))
 	mux.Handle("GET /api/leveldb/get", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleLevelDBGet))))
 	mux.Handle("GET /api/leveldb/dump", allowNullOrigin(http.HandlerFunc(s.handleLevelDBDump)))
+	// sqlite 查看器:tables/rows/query 都是 JSON,走编码协商。
+	mux.Handle("GET /api/sqlite/tables", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleSQLiteTables))))
+	mux.Handle("GET /api/sqlite/rows", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleSQLiteRows))))
+	mux.Handle("GET /api/sqlite/query", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleSQLiteQuery))))
+	// export 是流式 CSV/JSONL 附件(逐行 flush),与 leveldb dump 一样裸注册。
+	mux.Handle("GET /api/sqlite/export", allowNullOrigin(http.HandlerFunc(s.handleSQLiteExport)))
 	// preflight for null-origin CORS requests: the GET routes above do not
 	// match OPTIONS, so answer them here without reaching a handler
 	mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {
@@ -1197,6 +1206,8 @@ func sniffMimeFrom(r io.Reader) string {
 		return "application/json"
 	case len(head) >= 4 && head[0] == 0x1a && head[1] == 0x45 && head[2] == 0xdf && head[3] == 0xa3:
 		return "video/webm" // EBML: webm/mkv container
+	case len(head) >= 16 && string(head[:15]) == "SQLite format 3" && head[15] == 0:
+		return "application/vnd.sqlite3" // sqlite 数据库文件
 	case len(head) >= 12 && string(head[4:8]) == "ftyp" && string(head[8:12]) == "avif":
 		return "image/avif"
 	case len(head) >= 4 && head[0] == 0 && head[1] == 0 && head[2] == 1 && head[3] == 0:
