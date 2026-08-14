@@ -1225,12 +1225,152 @@ func sniffMimeFrom(r io.Reader) string {
 	return strings.TrimSpace(mt)
 }
 
-// looksLikeJSON reports whether the head starts with a JSON value. A loose
-// check on the first non-space byte is enough: valid JSON documents begin
-// with '{' or '[', and a truncated 512-byte prefix cannot be validated.
+// looksLikeJSON reports whether the head starts with a JSON value.
+// A structural check beats a first-byte guess: text starting with '[' or '{'
+// (log lines like "[2026-08-14 12:00:00] ...", shell blocks, awk programs) is
+// everywhere, and labeling it JSON breaks the code viewer. When the value
+// closes inside the head, json.Valid decides exactly; an unterminated prefix
+// (truncated 512-byte read) is accepted only if the opening bracket is
+// followed by a legitimate JSON value start.
 func looksLikeJSON(head []byte) bool {
-	s := strings.TrimSpace(string(head))
-	return len(s) > 0 && (s[0] == '{' || s[0] == '[')
+	head = trimJSONSpace(head)
+	if len(head) == 0 || (head[0] != '{' && head[0] != '[') {
+		return false
+	}
+	if end, ok := jsonClose(head); ok {
+		return json.Valid(head[:end+1])
+	}
+	// Unterminated within the head: the first value inside the bracket must
+	// look like JSON. "[2026-08-14 ..." is a number followed by '-', which a
+	// JSON number can never contain, so it is rejected here.
+	head = trimJSONSpace(head[1:])
+	if len(head) == 0 {
+		return false
+	}
+	switch head[0] {
+	case '"', '{', '[', ']':
+		return true
+	case 't':
+		return jsonKeyword(head, "true")
+	case 'f':
+		return jsonKeyword(head, "false")
+	case 'n':
+		return jsonKeyword(head, "null")
+	default:
+		return isJSONNumberStart(head)
+	}
+}
+
+// jsonClose scans head (which must start with '{' or '[') and reports the
+// index of the matching close bracket when one appears within head. String
+// literals and escapes are respected, so brackets inside strings do not
+// affect the depth.
+func jsonClose(head []byte) (int, bool) {
+	depth := 1
+	inStr := false
+	esc := false
+	for j := 1; j < len(head); j++ {
+		c := head[j]
+		if inStr {
+			if esc {
+				esc = false
+			} else if c == '\\' {
+				esc = true
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+			if depth == 0 {
+				return j, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// trimJSONSpace removes the BOM and leading JSON whitespace.
+func trimJSONSpace(b []byte) []byte {
+	if len(b) >= 3 && b[0] == 0xef && b[1] == 0xbb && b[2] == 0xbf {
+		b = b[3:]
+	}
+	return bytes.TrimLeft(b, " \t\r\n")
+}
+
+// jsonKeyword reports whether b starts with the JSON keyword kw followed by a
+// separator or the head edge, so "trueish" is not "true".
+func jsonKeyword(b []byte, kw string) bool {
+	if !bytes.HasPrefix(b, []byte(kw)) {
+		return false
+	}
+	if len(b) == len(kw) {
+		return true
+	}
+	c := b[len(kw)]
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ',' || c == ']' || c == '}'
+}
+
+// isJSONNumberStart reports whether b begins a plausible JSON number token
+// (fraction/exponent may be cut off at the head edge), optionally followed by
+// a JSON separator. A date like "2026-08-14" fails: '-' after the digits is
+// not a separator.
+func isJSONNumberStart(b []byte) bool {
+	i := 0
+	if b[i] == '-' {
+		i++
+		if i >= len(b) {
+			return false
+		}
+	}
+	// integer part
+	if b[i] == '0' {
+		i++
+	} else if b[i] >= '1' && b[i] <= '9' {
+		for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+			i++
+		}
+	} else {
+		return false
+	}
+	// fraction
+	if i < len(b) && b[i] == '.' {
+		i++
+		if i >= len(b) {
+			return true // truncated at the head edge
+		}
+		if b[i] < '0' || b[i] > '9' {
+			return false
+		}
+		for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+			i++
+		}
+	}
+	// exponent
+	if i < len(b) && (b[i] == 'e' || b[i] == 'E') {
+		i++
+		if i < len(b) && (b[i] == '+' || b[i] == '-') {
+			i++
+		}
+		if i >= len(b) {
+			return true // truncated at the head edge
+		}
+		if b[i] < '0' || b[i] > '9' {
+			return false
+		}
+		for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+			i++
+		}
+	}
+	// the token must end at a separator or the head edge
+	return i >= len(b) || b[i] == ' ' || b[i] == '\t' || b[i] == '\r' || b[i] == '\n' ||
+		b[i] == ',' || b[i] == ']' || b[i] == '}'
 }
 
 // isSVG reports whether the head looks like an SVG document (the svg root

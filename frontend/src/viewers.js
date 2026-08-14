@@ -430,6 +430,10 @@ export function viewerFor(name, mime) {
     return 'code'
   }
   if (mt.startsWith('text/')) {
+    // HTML 内容 + html/htm 名字:进双栏渲染查看器(沙箱 iframe)。内容
+    // 嗅探是渲染信号;非 html 名字的 text/html(如 .txt 里放 HTML 片段)
+    // 仍按代码查看,不被名字之外的信号误导。
+    if ((ext === 'html' || ext === 'htm') && mt === 'text/html') return 'html'
     if (ext === 'md' || ext === 'markdown' || mt === 'text/markdown') return 'markdown'
     if (ext === 'jsonl' || ext === 'jsonlines') return 'jsonl'
     return 'code'

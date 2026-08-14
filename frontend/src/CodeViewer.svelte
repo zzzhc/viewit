@@ -1,7 +1,7 @@
 <script>
   import hljs from 'highlight.js'
   import { fileUrl } from './api.js'
-  import { codeLanguage, copyText, detectLanguage, languageFromMime, languageLabel } from './viewers.js'
+  import { codeLanguage, copyText, detectLanguage, extension, languageFromMime, languageLabel, TEXT } from './viewers.js'
   import { isDark } from './theme.svelte.js'
 
   // svelte-jsoneditor is heavy (~600KB): load it only when a JSON file is viewed
@@ -78,6 +78,12 @@
         html = hljs.highlight(text, { language: fromMime, ignoreIllegals: true }).value
         langLabel = languageLabel(fromMime)
         isJson = fromMime === 'json'
+      } else if (TEXT.includes(extension(name)) || TEXT.includes(name.toLowerCase())) {
+        // 纯文本族(txt/log/gitignore/license…):名字即类型,跳过内容检测。
+        // 否则 hljs 会把 .gitignore 的 `*`/`!` 误判为 YAML、把含 `#` 的
+        // 文本误判为 Markdown 等。
+        html = hljs.highlight(text, { language: 'plaintext', ignoreIllegals: true }).value
+        langLabel = languageLabel('plaintext')
       } else {
         // no name or mime hint: let the content decide the language, but
         // only among a curated set and only with enough sample to go on

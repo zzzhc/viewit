@@ -612,6 +612,16 @@ func TestListMimeFromContent(t *testing.T) {
 		"notes.map": {[]byte("{\"version\":3,\"sources\":[]}\n"), "application/json"},
 		"arr.json":  {[]byte("[\n  1,\n  2\n]\n"), "application/json"},
 		"doc.go":    {[]byte("package main\n"), "text/plain"},
+		// '['/'{' 开头的非 JSON 文本不得误判为 application/json(严格结构校验)
+		"codegraph.log": {[]byte("[CodeGraph] v1.5.0 is available. Update with `codegraph upgrade`.\n"), "text/plain"},
+		"ts.log":        {[]byte("[2026-08-14 16:25:03] INFO starting worker\n"), "text/plain"},
+		"brace.txt":     {[]byte("{ echo hello; }\n"), "text/plain"},
+		// 真 JSON 数组/对象仍要识别,包括 512B 截断的情况
+		"json.log":  {[]byte("[{\"a\":1},{\"b\":2}]\n"), "application/json"},
+		"big.json":  {[]byte("{\"data\": [" + strings.Repeat("1,", 300) + "1]}\n"), "application/json"},
+		"open.json": {[]byte("[" + strings.Repeat("1,", 300)), "application/json"},
+		// 截断且括号未闭合的超长日志行:数字后跟 '-' 不是合法 JSON 数字
+		"long.log": {[]byte("[2026-08-14 16:25:03] " + strings.Repeat("x", 600) + "\n"), "text/plain"},
 	}
 	for name, tc := range files {
 		if err := os.WriteFile(filepath.Join(root, name), tc.content, 0o644); err != nil {
