@@ -1,6 +1,7 @@
 <script>
   import { tick } from 'svelte'
   import { leveldbKeys, leveldbGet, leveldbDumpUrl, ldbName } from './api.js'
+  import LdbValue from './LdbValue.svelte'
 
   // props:path leveldb 数据目录(相对 root)。
   let { path } = $props()
@@ -105,8 +106,9 @@
   let dumpCancelled = false
 
   function appendBlock(title) {
-    results = [...results, { title, lines: [] }]
+    results = [...results, { title, lines: [], value: null }]
     resultsVersion++
+    return results[results.length - 1] // 深代理引用:后续设 value 可触发响应
   }
   function appendLine(line) {
     const b = results[results.length - 1]
@@ -130,17 +132,10 @@
   }
 
   async function runGet(key) {
-    appendBlock(`get ${key}`)
+    const block = appendBlock(`get ${key}`)
     try {
-      const v = await leveldbGet(path, key)
-      if (v.tooBig) {
-        appendLine({ kind: 'error', text: `值过大(${v.size} 字节,超过 5MB 上限);用 dump <prefix> 导出` })
-      } else if (v.text != null) {
-        appendLine({ kind: 'value', text: v.text })
-      } else {
-        appendLine({ kind: 'text', text: `[二进制 ${v.size} 字节, base64]` })
-        appendLine({ kind: 'value', text: v.base64 })
-      }
+      block.value = await leveldbGet(path, key)
+      resultsVersion++ // 值卡片挂载后滚动跟随
     } catch (e) {
       appendLine({ kind: 'error', text: e.message })
     }
@@ -334,17 +329,19 @@
           {#each results as block}
             <div class="mb-3">
               <div class="mb-0.5 text-[12px] font-semibold text-muted">{block.title}</div>
-              {#each block.lines as line}
-                {#if line.kind === 'value'}
-                  <pre class="whitespace-pre-wrap break-all">{line.text}</pre>
-                {:else if line.kind === 'error'}
-                  <div class="text-danger">{line.text}</div>
-                {:else if line.kind === 'progress'}
-                  <div class="text-muted">{line.text}</div>
-                {:else}
-                  <div>{line.text}</div>
-                {/if}
-              {/each}
+              {#if block.value}
+                <LdbValue value={block.value} />
+              {:else}
+                {#each block.lines as line}
+                  {#if line.kind === 'error'}
+                    <div class="text-danger">{line.text}</div>
+                  {:else if line.kind === 'progress'}
+                    <div class="text-muted">{line.text}</div>
+                  {:else}
+                    <div>{line.text}</div>
+                  {/if}
+                {/each}
+              {/if}
             </div>
           {/each}
         </div>

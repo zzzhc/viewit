@@ -444,6 +444,14 @@
   .stream-stat {
     @apply flex-none whitespace-nowrap text-xs text-muted;
   }
+  /* ---- LevelDB 值卡片 ---- */
+  .ldb-value {
+    @apply flex flex-col overflow-hidden rounded border border-edge bg-panel;
+  }
+  .ldb-value-body {
+    height: min(60vh, 480px);
+    @apply flex min-h-0 flex-col overflow-hidden;
+  }
 }
 
 /* ---- 代码高亮(自绘主题,颜色由 --hl-* 变量驱动,随深浅主题切换) ---- */
