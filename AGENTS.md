@@ -44,6 +44,8 @@ go vet ./... && go test ./...
 
 - `server.go` / `server_test.go`:基础路由与路径安全
 - `finder.go` / `finder_test.go`:模糊查找索引、分块 top-N 匹配、WS 协议
+- `sqlite.go` / `sqlite_test.go`:SQLite 查看器
+- `parquet.go` / `parquet_test.go`:Parquet 查看器(`xitongsys/parquet-go`)
 - `frontend/src/api.js` + `viewers.js`:前后端契约与 viewer 分派
 - `frontend/src/finder.js` + `FileFinder.svelte`:查找面板(WS 客户端 + 快捷键/UI)
 - `frontend/vite.config.js`:代理目标,改端口时同步 `VITE_BACKEND`

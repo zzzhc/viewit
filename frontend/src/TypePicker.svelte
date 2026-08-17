@@ -20,6 +20,7 @@
     ['html', 'HTML'],
     ['jsonl', 'JSONL'],
     ['sqlite', 'SQLite'],
+    ['parquet', 'Parquet'],
     ['code', '代码/文本']
   ]
 

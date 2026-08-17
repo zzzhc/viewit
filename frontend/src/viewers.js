@@ -364,7 +364,7 @@ export const FILE_TYPES = buildFileTypes()
 const VIEW_LABELS = {
   image: '图片', video: '视频', audio: '音频', pdf: 'PDF',
   xml: 'XML', markdown: 'Markdown', html: 'HTML', jsonl: 'JSONL',
-  code: '代码/文本', sqlite: 'SQLite', download: '下载'
+  code: '代码/文本', sqlite: 'SQLite', parquet: 'Parquet', download: '下载'
 }
 
 export function viewTypeLabel(view) {
@@ -409,6 +409,8 @@ function buildFileTypes() {
   put('sqlite', 'sqlite')
   put('sqlite3', 'sqlite')
   put('db', 'sqlite')
+  put('parquet', 'parquet')
+  put('pq', 'parquet')
   return [...map.values()]
 }
 
@@ -443,6 +445,8 @@ export function viewerFor(name, mime) {
   // SQLite 数据库文件:进入 SQLite 查看器(内容签名识别,扩展名不兜底——
   // 任意 .db 文件若内容不是 SQLite,仍按二进制下载,可手动指定类型)
   if (mt === 'application/vnd.sqlite3' || mt === 'application/x-sqlite3') return 'sqlite'
+  // Parquet:内容签名 PAR1 识别,扩展名不兜底(与 sqlite 同规则)
+  if (mt === 'application/vnd.apache.parquet' || mt === 'application/x-parquet') return 'parquet'
   // any other identified mime is binary non-media: the filename must not
   // override what the content says (a .json holding a zip is a zip)
   if (mt && mt !== 'application/octet-stream' && mt !== 'application/ogg') return 'download'

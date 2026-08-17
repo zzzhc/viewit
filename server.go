@@ -40,6 +40,9 @@ type server struct {
 
 	sqMu    sync.Mutex           // guards sqCache
 	sqCache map[string]*sqEntry  // sqlite 只读句柄缓存,按规范路径
+
+	pqMu    sync.Mutex          // guards pqCache
+	pqCache map[string]*pqEntry // parquet 只读 reader 缓存,按规范路径
 }
 
 type fileEntry struct {
@@ -94,7 +97,7 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("root %q: %w", root, err)
 	}
-	s := &server{root: resolved, idx: &findIndex{}, tarStore: newTarIndexStore(), ldbCache: map[string]*ldbEntry{}, sqCache: map[string]*sqEntry{}}
+	s := &server{root: resolved, idx: &findIndex{}, tarStore: newTarIndexStore(), ldbCache: map[string]*ldbEntry{}, sqCache: map[string]*sqEntry{}, pqCache: map[string]*pqEntry{}}
 
 	dist, err := fs.Sub(embedFS, "frontend/dist.gz")
 	if err != nil {
@@ -128,6 +131,10 @@ func newHandler(root string, dev bool) (http.Handler, error) {
 	mux.Handle("GET /api/sqlite/query", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleSQLiteQuery))))
 	// export 是流式 CSV/JSONL 附件(逐行 flush),与 leveldb dump 一样裸注册。
 	mux.Handle("GET /api/sqlite/export", allowNullOrigin(http.HandlerFunc(s.handleSQLiteExport)))
+	// parquet 查看器:meta/rows 是 JSON,走编码协商;export 流式 CSV/JSONL。
+	mux.Handle("GET /api/parquet/meta", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleParquetMeta))))
+	mux.Handle("GET /api/parquet/rows", allowNullOrigin(withFrontendEncoding(http.HandlerFunc(s.handleParquetRows))))
+	mux.Handle("GET /api/parquet/export", allowNullOrigin(http.HandlerFunc(s.handleParquetExport)))
 	// preflight for null-origin CORS requests: the GET routes above do not
 	// match OPTIONS, so answer them here without reaching a handler
 	mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {
@@ -1208,6 +1215,8 @@ func sniffMimeFrom(r io.Reader) string {
 		return "video/webm" // EBML: webm/mkv container
 	case len(head) >= 16 && string(head[:15]) == "SQLite format 3" && head[15] == 0:
 		return "application/vnd.sqlite3" // sqlite 数据库文件
+	case len(head) >= 4 && string(head[:4]) == "PAR1":
+		return "application/vnd.apache.parquet" // parquet 文件头 magic
 	case len(head) >= 12 && string(head[4:8]) == "ftyp" && string(head[8:12]) == "avif":
 		return "image/avif"
 	case len(head) >= 4 && head[0] == 0 && head[1] == 0 && head[2] == 1 && head[3] == 0:

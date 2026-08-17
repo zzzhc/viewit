@@ -15,6 +15,7 @@
   import DownloadViewer from './DownloadViewer.svelte'
   import LevelDBViewer from './LevelDBViewer.svelte'
   import SqliteViewer from './SqliteViewer.svelte'
+  import ParquetViewer from './ParquetViewer.svelte'
   import TypePicker from './TypePicker.svelte'
   import { listDir, LIST_CHUNK } from './api.js'
   import { downloadUrl } from './api.js'
@@ -251,6 +252,8 @@
         <JsonlViewer path={filePath} name={selected.name} />
       {:else if view === 'sqlite'}
         <SqliteViewer path={filePath} />
+      {:else if view === 'parquet'}
+        <ParquetViewer path={filePath} />
       {:else}
         <DownloadViewer path={filePath} name={selected.name} size={selected.size} force={overrideType?.view === 'download'} />
       {/if}

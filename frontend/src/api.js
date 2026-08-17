@@ -139,3 +139,45 @@ export function sqliteExportUrl(path, { table = '', sql = '', format = 'csv' } =
   if (sql) q.push(`sql=${encodeURIComponent(sql)}`)
   return `/api/sqlite/export?${q.join('&')}`
 }
+
+// ---- Parquet 查看器 ----
+
+// parquetMeta 返回 schema 与行数:
+// { columns: [{ name, type, repetition }], rows, createdBy?, rowGroups }。
+export async function parquetMeta(path) {
+  const res = await fetch(`/api/parquet/meta?path=${encodeURIComponent(path)}`)
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    throw new Error((data && data.error) || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+// parquetRows 分页拉取行数据:返回 { columns, rows, hasMore, total? }。
+// total 仅在 offset=0 时下发(有过滤时仅扫完全文件才有匹配总数)。
+// filters: [{ col, op, val }],col 空表示任意列。
+export async function parquetRows(path, { offset = 0, limit = 500, filters = [] } = {}) {
+  const q = [
+    `path=${encodeURIComponent(path)}`,
+    `offset=${offset}`,
+    `limit=${limit}`,
+  ]
+  for (const f of filters) {
+    q.push(`f=${encodeURIComponent(`${f.op}:${f.col}=${f.val}`)}`)
+  }
+  const res = await fetch(`/api/parquet/rows?${q.join('&')}`)
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    throw new Error((data && data.error) || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+// parquetExportUrl 是流式导出(CSV/JSONL)的下载 URL;filters 与 rows 接口同形。
+export function parquetExportUrl(path, format = 'csv', filters = []) {
+  const q = [`path=${encodeURIComponent(path)}`, `format=${format}`]
+  for (const f of filters) {
+    q.push(`f=${encodeURIComponent(`${f.op}:${f.col}=${f.val}`)}`)
+  }
+  return `/api/parquet/export?${q.join('&')}`
+}

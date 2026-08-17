@@ -36,6 +36,7 @@
 | Markdown | 双栏实时渲染:LaTeX、Mermaid、GFM、原始 HTML |
 | PDF / XML / JSONL | 直接查看 |
 | SQLite 数据库 | 表/视图列表与结构、行数据分页浏览、只读 SQL 查询,点击单元格查看值 |
+| Parquet | schema 与行数据分页浏览,按字段值过滤,点击单元格查看值,可导出 CSV/JSONL |
 | tar / zip | 不解压直接浏览内部目录,内层文件照常预览 |
 
 自动识别不准?点击预览页顶部的类型徽标可手动指定(如把无扩展名的 Markdown 按 Markdown 打开、让未知语言的脚本按指定语言高亮),仅对当前文件生效,切换文件后自动恢复。
